@@ -1,0 +1,53 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project
+
+driftwm — a trackpad-first infinite canvas Wayland compositor written in Rust. Windows float on an unbounded 2D plane navigated via trackpad gestures (pan, zoom, pinch). No workspaces, no tiling. Built on [smithay](https://github.com/Smithay/smithay).
+
+The project is in early development (milestone 1). See `docs/DESIGN.md` for the full specification.
+
+## Conventions
+
+- Documentation files (except README.md) live in `docs/`.
+- Config path: `~/.config/driftwm/config.toml` (respects `XDG_CONFIG_HOME`).
+
+## Build & Run
+
+```bash
+cargo build              # build
+cargo run                # run nested in existing Wayland session (winit backend)
+cargo run -- --backend udev   # run on real hardware (from TTY)
+cargo test               # run tests
+cargo test test_name     # run a single test
+cargo clippy             # lint
+```
+
+Use `RUST_LOG=debug cargo run` for smithay/libinput event traces.
+
+## Architecture
+
+The compositor uses a **camera/viewport** model: the screen is a viewport onto an infinite 2D plane. Each window has absolute `(x, y)` canvas coordinates. The viewport has a camera `(cx, cy)` and zoom `z`. Screen position = `(wx - cx) * z`. Multiple monitors = multiple independent viewports on the same canvas.
+
+Planned source layout (from DESIGN.md):
+
+- `state.rs` — compositor state: canvas, viewports, window list
+- `canvas.rs` — viewport math, coordinate transforms, zoom
+- `input/` — gesture state machine (`gestures.rs`), keybinds (`keyboard.rs`), mouse fallbacks (`mouse.rs`)
+- `window/` — decorations (`decorations.rs`), z-order/stacking (`stacking.rs`)
+- `shell/` — protocol implementations: `xdg.rs`, `layer.rs` (wlr-layer-shell), `xwayland.rs`
+- `output.rs` — multi-monitor / viewport management
+- `render.rs` — frame rendering, damage tracking, zoom scaling
+
+## Key Design Decisions
+
+- **CSD-first**: compositor advertises only `close` and `fullscreen` capabilities (no maximize/minimize). SSD fallback for XWayland/Qt apps that need it.
+- **Gesture-driven**: 2-finger pan/pinch for viewport, 3-finger for window manipulation, 4-finger for navigation. Mouse equivalents use Super+click modifiers.
+- **Canvas background**: scrolls with viewport (not fixed to screen). Default is a GLSL dot-grid shader; static shaders are cached and only re-render on viewport changes.
+- **Widgets**: eww windows as regular `xdg-toplevel` surfaces placed near `(0, 0)`, matched by window rules (`app_id = "eww-*"`).
+- **External tools**: launcher, lock screen, screenshots are external programs (bemenu-run, swaylock, grim) — not built into the compositor.
+
+## Rust Edition
+
+Uses Rust edition **2024** — be aware of edition-specific language features and defaults.
