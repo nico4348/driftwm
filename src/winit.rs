@@ -16,7 +16,7 @@ use smithay::{
 };
 use std::time::Duration;
 
-use crate::state::CalloopData;
+use crate::state::{CalloopData, log_err};
 
 /// Initialize the winit backend: create a window, set up the output, and
 /// start the render loop timer.
@@ -89,8 +89,8 @@ pub fn init_winit(
             }
 
             // --- Dispatch Wayland client messages before rendering ---
-            data.display.dispatch_clients(&mut data.state).unwrap();
-            data.display.flush_clients().unwrap();
+            log_err("dispatch_clients", data.display.dispatch_clients(&mut data.state));
+            log_err("flush_clients", data.display.flush_clients());
 
             // --- Render ---
             // buffer_age() before bind() to avoid borrow conflicts.
@@ -132,7 +132,7 @@ pub fn init_winit(
             // --- Cleanup ---
             data.state.space.refresh();
             data.state.popups.cleanup();
-            data.display.flush_clients().unwrap();
+            log_err("flush_clients", data.display.flush_clients());
 
             TimeoutAction::ToDuration(Duration::from_millis(16))
         })?;

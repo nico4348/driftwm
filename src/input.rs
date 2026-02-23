@@ -4,14 +4,15 @@ use smithay::{
         KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
     },
     input::{
-        keyboard::{keysyms, FilterResult, Keysym},
+        keyboard::FilterResult,
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{Point, SERIAL_COUNTER},
 };
 
-use crate::state::DriftWm;
+use crate::config::Action;
+use crate::state::{DriftWm, log_err};
 
 impl DriftWm {
     /// Process a single input event from any backend (winit, libinput, etc).
@@ -41,43 +42,38 @@ impl DriftWm {
             key_state,
             serial,
             time,
-            |_state, modifiers, handle| {
-                let sym = handle.modified_sym();
-
-                if key_state == KeyState::Pressed && modifiers.logo {
-                    if sym == Keysym::from(keysyms::KEY_Return) {
-                        return FilterResult::Intercept(KeyAction::SpawnTerminal);
-                    }
-                    if sym == Keysym::from(keysyms::KEY_q) {
-                        return FilterResult::Intercept(KeyAction::CloseWindow);
+            |state, modifiers, handle| {
+                if key_state == KeyState::Pressed {
+                    let sym = handle.modified_sym();
+                    if let Some(action) = state.config.lookup(modifiers, sym) {
+                        return FilterResult::Intercept(action.clone());
                     }
                 }
-
                 FilterResult::Forward
             },
         );
 
-        // Handle intercepted compositor shortcuts
         if let Some(action) = action {
-            match action {
-                KeyAction::SpawnTerminal => {
-                    tracing::info!("Spawning terminal: {}", self.terminal_cmd);
-                    if let Err(e) = std::process::Command::new(&self.terminal_cmd).spawn() {
-                        tracing::error!("Failed to spawn terminal: {e}");
-                    }
-                }
-                KeyAction::CloseWindow => {
-                    // Close the focused window (topmost in stacking order)
-                    let keyboard = self.seat.get_keyboard().unwrap();
-                    if let Some(focus) = keyboard.current_focus() {
-                        let window = self
-                            .space
-                            .elements()
-                            .find(|w| w.toplevel().unwrap().wl_surface() == &focus)
-                            .cloned();
-                        if let Some(window) = window {
-                            window.toplevel().unwrap().send_close();
-                        }
+            self.execute_action(&action);
+        }
+    }
+
+    fn execute_action(&mut self, action: &Action) {
+        match action {
+            Action::SpawnCommand(cmd) => {
+                tracing::info!("Spawning: {cmd}");
+                log_err("spawn command", std::process::Command::new(cmd).spawn());
+            }
+            Action::CloseWindow => {
+                let keyboard = self.seat.get_keyboard().unwrap();
+                if let Some(focus) = keyboard.current_focus() {
+                    let window = self
+                        .space
+                        .elements()
+                        .find(|w| w.toplevel().unwrap().wl_surface() == &focus)
+                        .cloned();
+                    if let Some(window) = window {
+                        window.toplevel().unwrap().send_close();
                     }
                 }
             }
@@ -120,11 +116,7 @@ impl DriftWm {
         // Click-to-focus + raise
         if button_state == ButtonState::Pressed {
             let pos = pointer.current_location();
-            if let Some((window, _)) = self
-                .space
-                .element_under(pos)
-                .map(|(w, p)| (w.clone(), p))
-            {
+            if let Some((window, _)) = self.space.element_under(pos).map(|(w, p)| (w.clone(), p)) {
                 self.space.raise_element(&window, true);
                 let keyboard = self.seat.get_keyboard().unwrap();
                 keyboard.set_focus(
@@ -190,15 +182,7 @@ impl DriftWm {
                         pos - window_loc.to_f64(),
                         smithay::desktop::WindowSurfaceType::ALL,
                     )
-                    .map(|(surface, surface_loc)| {
-                        (surface, (surface_loc + window_loc).to_f64())
-                    })
+                    .map(|(surface, surface_loc)| (surface, (surface_loc + window_loc).to_f64()))
             })
     }
-}
-
-/// Actions that keyboard shortcuts can trigger.
-enum KeyAction {
-    SpawnTerminal,
-    CloseWindow,
 }

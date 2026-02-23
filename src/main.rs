@@ -1,9 +1,10 @@
+mod config;
 mod handlers;
 mod input;
 mod state;
 mod winit;
 
-use state::{CalloopData, ClientState};
+use state::{CalloopData, ClientState, log_err};
 use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -49,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             smithay::reexports::calloop::Mode::Level,
         ),
         |_, _, data: &mut CalloopData| {
-            data.display.dispatch_clients(&mut data.state).unwrap();
+            log_err("dispatch_clients", data.display.dispatch_clients(&mut data.state));
             Ok(smithay::reexports::calloop::PostAction::Continue)
         },
     )?;
@@ -68,13 +69,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .handle()
         .insert_source(listening_socket, |stream, _, data: &mut CalloopData| {
             tracing::info!("New client connected");
-            if let Err(e) = data
+            log_err("insert_client", data
                 .display
                 .handle()
-                .insert_client(stream, Arc::new(ClientState::default()))
-            {
-                tracing::error!("Failed to insert client: {e}");
-            }
+                .insert_client(stream, Arc::new(ClientState::default())));
+
         })?;
 
     // Run the event loop
@@ -82,8 +81,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     event_loop.run(None, &mut data, |data| {
         data.state.space.refresh();
         data.state.popups.cleanup();
-        data.display.dispatch_clients(&mut data.state).unwrap();
-        data.display.flush_clients().unwrap();
+        log_err("dispatch_clients", data.display.dispatch_clients(&mut data.state));
+        log_err("flush_clients", data.display.flush_clients());
     })?;
 
     Ok(())

@@ -1,14 +1,14 @@
 use smithay::{
     desktop::{PopupManager, Space, Window},
-    input::{keyboard::XkbConfig, Seat, SeatState},
-    wayland::output::OutputManagerState,
+    input::{Seat, SeatState, keyboard::XkbConfig},
     reexports::{
         calloop::{LoopHandle, LoopSignal},
         wayland_server::{
-            backend::{ClientData, ClientId, DisconnectReason},
             Display, DisplayHandle,
+            backend::{ClientData, ClientId, DisconnectReason},
         },
     },
+    wayland::output::OutputManagerState,
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         selection::data_device::DataDeviceState,
@@ -17,6 +17,16 @@ use smithay::{
     },
 };
 use std::time::Instant;
+
+use crate::config::Config;
+
+/// Log an error result with context, discarding the Ok value.
+#[inline]
+pub fn log_err(context: &str, result: Result<impl Sized, impl std::fmt::Display>) {
+    if let Err(e) = result {
+        tracing::error!("{context}: {e}");
+    }
+}
 
 /// Wrapper held by the calloop event loop — gives callbacks access
 /// to both compositor state and the Wayland display.
@@ -47,8 +57,8 @@ pub struct DriftWm {
     // Input
     pub seat: Seat<DriftWm>,
 
-    // Terminal command for Super+Return
-    pub terminal_cmd: String,
+    // Keybindings and settings
+    pub config: Config,
 }
 
 /// Per-client state stored by wayland-server for each connected client.
@@ -80,9 +90,6 @@ impl DriftWm {
             .expect("Failed to add keyboard");
         seat.add_pointer();
 
-        let terminal_cmd = detect_terminal();
-        tracing::info!("Terminal command: {terminal_cmd}");
-
         Self {
             start_time: Instant::now(),
             display_handle: dh,
@@ -97,29 +104,7 @@ impl DriftWm {
             seat_state,
             data_device_state,
             seat,
-            terminal_cmd,
+            config: Config::default(),
         }
     }
-}
-
-/// Detect an available terminal emulator.
-/// Checks $TERMINAL, then probes common terminals.
-fn detect_terminal() -> String {
-    if let Ok(term) = std::env::var("TERMINAL") {
-        if !term.is_empty() {
-            return term;
-        }
-    }
-    for cmd in ["foot", "alacritty", "ptyxis", "kitty", "wezterm"] {
-        if std::process::Command::new("which")
-            .arg(cmd)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-        {
-            return cmd.to_string();
-        }
-    }
-    "foot".to_string()
 }
