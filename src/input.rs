@@ -186,3 +186,9 @@ impl DriftWm {
             })
     }
 }
+
+/// Actions that keyboard shortcuts can trigger.
+enum KeyAction {
+    SpawnTerminal,
+    CloseWindow,
+}

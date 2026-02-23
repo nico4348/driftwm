@@ -124,7 +124,7 @@ For users without a trackpad, or for debugging:
 
 | Trackpad gesture             | Mouse + modifier equivalent   |
 | ---------------------------- | ----------------------------- |
-| 2-finger pan (viewport)      | `Super` + right-click drag    |
+| 2-finger pan (viewport)      | Click-drag on empty canvas, or `Super` + right-click drag |
 | 3-finger pan (move win)      | `Super` + left-click drag     |
 | 2-finger pinch (zoom)        | `Super` + scroll wheel        |
 | 4-finger pan (center)        | `Super+Alt` + left-click drag |
@@ -143,6 +143,7 @@ Minimal set. Defaults below, all configurable via `[keybinds]` table (maps key c
 | `Super+Q`       | Close focused window                 |
 | `Super+C`       | Center focused window in viewport    |
 | `Super+F`       | Toggle fullscreen                    |
+| `Super+Ctrl+Arrow` | Nudge focused window 20px in direction |
 
 ### Navigation
 
@@ -450,7 +451,8 @@ src/
    background color. Accept xdg-shell clients. Display a terminal.
 2. **Move and resize**: drag windows with mouse, resize from edges. Basic
    stacking (click to raise).
-3. **Infinite canvas**: implement viewport panning with Super+right-drag.
+3. **Infinite canvas**: implement viewport panning — click-drag on empty canvas,
+   scroll on empty canvas, and Super+right-drag anywhere.
 4. **Canvas background**: shader and tiled image rendering with dot grid
    default. Essential spatial feedback for panning on an infinite canvas.
 5. **Trackpad gestures**: wire up libinput gesture events. 2-finger pan,

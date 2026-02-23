@@ -1,14 +1,22 @@
+use std::cell::RefCell;
+
+use crate::grabs::{MoveSurfaceGrab, ResizeState, ResizeSurfaceGrab};
 use crate::state::DriftWm;
 use smithay::{
     delegate_xdg_shell,
     desktop::Window,
+    input::pointer::{Focus, GrabStartData},
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
-        wayland_server::protocol::wl_seat,
+        wayland_server::{Resource, protocol::wl_seat},
     },
     utils::Serial,
-    wayland::shell::xdg::{
-        PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+    wayland::{
+        compositor::with_states,
+        seat::WaylandFocus,
+        shell::xdg::{
+            PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+        },
     },
 };
 
@@ -71,22 +79,103 @@ impl XdgShellHandler for DriftWm {
 
     fn move_request(
         &mut self,
-        _surface: ToplevelSurface,
+        surface: ToplevelSurface,
         _seat: wl_seat::WlSeat,
-        _serial: Serial,
+        serial: Serial,
     ) {
-        // TODO: milestone 2 — interactive move
+        let wl_surface = surface.wl_surface().clone();
+        let Some(window) = self
+            .space
+            .elements()
+            .find(|w| w.toplevel().unwrap().wl_surface() == &wl_surface)
+            .cloned()
+        else {
+            return;
+        };
+
+        let pointer = self.seat.get_pointer().unwrap();
+        let Some(start_data) = check_grab(&pointer, &wl_surface) else {
+            return;
+        };
+
+        let initial_window_location = self.space.element_location(&window).unwrap();
+        let grab = MoveSurfaceGrab {
+            start_data,
+            window,
+            initial_window_location,
+        };
+        pointer.set_grab(self, grab, serial, Focus::Clear);
     }
 
     fn resize_request(
         &mut self,
-        _surface: ToplevelSurface,
+        surface: ToplevelSurface,
         _seat: wl_seat::WlSeat,
-        _serial: Serial,
-        _edges: xdg_toplevel::ResizeEdge,
+        serial: Serial,
+        edges: xdg_toplevel::ResizeEdge,
     ) {
-        // TODO: milestone 2 — interactive resize
+        let wl_surface = surface.wl_surface().clone();
+        let Some(window) = self
+            .space
+            .elements()
+            .find(|w| w.toplevel().unwrap().wl_surface() == &wl_surface)
+            .cloned()
+        else {
+            return;
+        };
+
+        let pointer = self.seat.get_pointer().unwrap();
+        let Some(start_data) = check_grab(&pointer, &wl_surface) else {
+            return;
+        };
+
+        let initial_window_location = self.space.element_location(&window).unwrap();
+        let initial_window_size = window.geometry().size;
+
+        // Store resize state in the surface data map for commit() repositioning
+        with_states(&wl_surface, |states| {
+            states
+                .data_map
+                .get_or_insert(|| RefCell::new(ResizeState::Idle))
+                .replace(ResizeState::Resizing {
+                    edges,
+                    initial_window_location,
+                    initial_window_size,
+                });
+        });
+
+        surface.with_pending_state(|state| {
+            state.states.set(xdg_toplevel::State::Resizing);
+        });
+
+        let grab = ResizeSurfaceGrab {
+            start_data,
+            window,
+            edges,
+            initial_window_location,
+            initial_window_size,
+            last_window_size: initial_window_size,
+        };
+        pointer.set_grab(self, grab, serial, Focus::Clear);
     }
 }
 
 delegate_xdg_shell!(DriftWm);
+
+/// Validate that the pointer has an active grab starting on the given surface.
+/// Returns the `GrabStartData` if the button click that started the grab
+/// originated on this surface (preventing a client from stealing another's grab).
+fn check_grab(
+    pointer: &smithay::input::pointer::PointerHandle<DriftWm>,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+) -> Option<GrabStartData<DriftWm>> {
+    let start_data = pointer.grab_start_data()?;
+    let (focus, _) = start_data.focus.as_ref()?;
+
+    // The button press must have been on this surface (or a child of it)
+    if !focus.same_client_as(&surface.id()) {
+        return None;
+    }
+
+    Some(start_data)
+}

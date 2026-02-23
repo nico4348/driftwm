@@ -29,11 +29,12 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the full specification.
 
 ## Status
 
-Early development. Current milestone: **1 — Window appears** (complete).
+Early development. Current milestone: **2 — Move and resize** (complete).
 
 The compositor opens a window via the winit backend, renders a dark background,
-accepts xdg-shell clients, and handles keyboard/pointer input. You can run
-terminals and GUI apps inside it.
+accepts xdg-shell clients, and handles keyboard/pointer input. Windows can be
+moved and resized via Alt+click drag or CSD decorations (title bar / border
+drag). You can run terminals and GUI apps inside it.
 
 ## Build & run
 
@@ -55,10 +56,15 @@ The socket name is printed at startup — use that if it differs from `wayland-1
 
 ## Keybinds
 
-| Shortcut       | Action         |
-|----------------|----------------|
-| `Super+Return` | Open terminal  |
-| `Super+Q`      | Close window   |
+| Shortcut             | Action                          |
+|----------------------|---------------------------------|
+| `Alt+Return`         | Open terminal                   |
+| `Alt+Q`              | Close window                    |
+| `Alt+Left-click`     | Drag to move window             |
+| `Alt+Right-click`    | Drag to resize window           |
+| `Super+Ctrl+Arrow`   | Nudge focused window by 20px    |
+
+CSD-initiated move/resize (title bar drag, border drag) also works.
 
 More keybinds planned — see [docs/DESIGN.md](docs/DESIGN.md#keyboard-shortcuts).
 
@@ -73,18 +79,23 @@ Not yet implemented — coming in a later milestone.
 src/
 ├── main.rs          # entry point, event loop, wayland socket
 ├── state.rs         # DriftWm struct, protocol state
+├── config.rs        # keybindings, actions, config
 ├── winit.rs         # winit backend + render loop
-├── input.rs         # keyboard/pointer handling
+├── input.rs         # keyboard/pointer handling, Alt+click move/resize
+├── grabs/
+│   ├── mod.rs       # grab module re-exports
+│   ├── move_grab.rs # interactive window move (PointerGrab)
+│   └── resize_grab.rs # interactive window resize (PointerGrab)
 └── handlers/
     ├── mod.rs       # seat, data device, output delegates
-    ├── compositor.rs # compositor + SHM handlers
-    └── xdg_shell.rs  # xdg-shell (window management)
+    ├── compositor.rs # compositor + SHM handlers, resize commit logic
+    └── xdg_shell.rs  # xdg-shell (window management, CSD move/resize)
 ```
 
 ## Milestones
 
 1. **Window appears** — winit backend, xdg-shell, terminal renders *(done)*
-2. Move and resize — drag/resize windows, stacking
+2. **Move and resize** — drag/resize windows, Alt+click, CSD support *(done)*
 3. Infinite canvas — viewport panning
 4. Canvas background — shader dot-grid
 5. Trackpad gestures — libinput gesture events

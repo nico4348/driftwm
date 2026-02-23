@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 driftwm — a trackpad-first infinite canvas Wayland compositor written in Rust. Windows float on an unbounded 2D plane navigated via trackpad gestures (pan, zoom, pinch). No workspaces, no tiling. Built on [smithay](https://github.com/Smithay/smithay).
 
-The project is in early development (milestone 1). See `docs/DESIGN.md` for the full specification and `docs/CAVEATS.md` for architectural pitfalls.
+The project is in early development (milestone 2 complete). See `docs/DESIGN.md` for the full specification and `docs/CAVEATS.md` for architectural pitfalls.
 
 ## Conventions
 
@@ -30,13 +30,21 @@ Use `RUST_LOG=debug cargo run` for smithay/libinput event traces.
 
 The compositor uses a **camera/viewport** model: the screen is a viewport onto an infinite 2D plane. Each window has absolute `(x, y)` canvas coordinates. The viewport has a camera `(cx, cy)` and zoom `z`. Screen position = `(wx - cx) * z`. Multiple monitors = multiple independent viewports on the same canvas.
 
-Planned source layout (from DESIGN.md):
+Current source layout:
 
-- `state.rs` — compositor state: canvas, viewports, window list
+- `state.rs` — DriftWm struct, CalloopData, ClientState
+- `config.rs` — keybindings, actions (SpawnCommand, CloseWindow, NudgeWindow), config
+- `winit.rs` — winit backend init + render loop (~60fps timer)
+- `input.rs` — keyboard/pointer handling, Alt+click move/resize, surface_under() hit-testing
+- `grabs/` — `move_grab.rs` (MoveSurfaceGrab), `resize_grab.rs` (ResizeSurfaceGrab, ResizeState)
+- `handlers/` — `compositor.rs` (commit, resize repositioning), `xdg_shell.rs` (CSD move/resize), `mod.rs` (seat, data device, output delegates)
+
+Planned additions (from DESIGN.md):
+
 - `canvas.rs` — viewport math, coordinate transforms, zoom
-- `input/` — gesture state machine (`gestures.rs`), keybinds (`keyboard.rs`), mouse fallbacks (`mouse.rs`)
-- `window/` — decorations (`decorations.rs`), z-order/stacking (`stacking.rs`)
-- `shell/` — protocol implementations: `xdg.rs`, `layer.rs` (wlr-layer-shell), `xwayland.rs`
+- `input/` — gesture state machine, mouse fallbacks (currently flat `input.rs`)
+- `window/` — decorations, z-order/stacking
+- `shell/` — layer shell, xwayland
 - `output.rs` — multi-monitor / viewport management
 - `render.rs` — frame rendering, damage tracking, zoom scaling
 

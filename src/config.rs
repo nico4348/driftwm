@@ -3,9 +3,18 @@ use std::collections::HashMap;
 use smithay::input::keyboard::{ModifiersState, Keysym, keysyms};
 
 #[derive(Clone, Debug)]
+pub enum Direction {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+#[derive(Clone, Debug)]
 pub enum Action {
     SpawnCommand(String),
     CloseWindow,
+    NudgeWindow(Direction),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -24,6 +33,10 @@ impl Modifiers {
     #[allow(dead_code)]
     pub fn logo() -> Self {
         Self { logo: true, ..Default::default() }
+    }
+
+    pub fn super_ctrl() -> Self {
+        Self { logo: true, ctrl: true, ..Default::default() }
     }
 
     fn from_state(state: &ModifiersState) -> Self {
@@ -69,6 +82,22 @@ impl Default for Config {
             (
                 KeyCombo { modifiers: Modifiers::alt(), sym: Keysym::from(keysyms::KEY_q) },
                 Action::CloseWindow,
+            ),
+            (
+                KeyCombo { modifiers: Modifiers::super_ctrl(), sym: Keysym::from(keysyms::KEY_Up) },
+                Action::NudgeWindow(Direction::Up),
+            ),
+            (
+                KeyCombo { modifiers: Modifiers::super_ctrl(), sym: Keysym::from(keysyms::KEY_Down) },
+                Action::NudgeWindow(Direction::Down),
+            ),
+            (
+                KeyCombo { modifiers: Modifiers::super_ctrl(), sym: Keysym::from(keysyms::KEY_Left) },
+                Action::NudgeWindow(Direction::Left),
+            ),
+            (
+                KeyCombo { modifiers: Modifiers::super_ctrl(), sym: Keysym::from(keysyms::KEY_Right) },
+                Action::NudgeWindow(Direction::Right),
             ),
         ]);
 
