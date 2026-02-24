@@ -161,6 +161,9 @@ pub fn init_winit(
             // --- Scroll momentum ---
             data.state.apply_scroll_momentum();
 
+            // --- Edge auto-pan (window drag near viewport edges) ---
+            data.state.apply_edge_pan();
+
             // --- Sync camera → output position ---
             data.state.update_output_from_camera();
 

@@ -12,10 +12,11 @@ Inspired by [vxwm](https://codeberg.org/wh1tepearl/vxwm). Built on [smithay](htt
 The screen is a viewport onto an infinite 2D plane. Each window has absolute
 coordinates on this plane. You move around with trackpad gestures:
 
-- **2-finger pan** on empty desktop — scroll the canvas
+- **2-finger scroll** on empty desktop — pan the canvas
+- **3-finger scroll** anywhere — pan the canvas (ignores windows)
+- **3-finger hold+drag** on a window — move that window
 - **2-finger pinch** — zoom in/out (bird's eye view)
-- **3-finger pan** on a window — move that window
-- **4-finger pan** — jump to the nearest window in that direction
+- **4-finger scroll** — jump to the nearest window in that direction
 - **4/5-finger pinch** — toggle home position
 
 Mouse equivalents use `Super` + click/drag for everything.
@@ -29,12 +30,13 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the full specification.
 
 ## Status
 
-Early development. Current milestone: **3 — Infinite canvas** (complete).
+Early development. Current milestone: **5 — Window navigation**.
 
-The compositor opens a window via the winit backend, renders xdg-shell clients
-on an infinite 2D canvas with viewport panning (scroll, click-drag, keyboard),
-scroll momentum with friction decay, and a compositor-rendered xcursor. Windows
-can be moved and resized via Alt+Shift+click drag or CSD decorations.
+The compositor runs nested via winit backend, renders xdg-shell clients on an
+infinite 2D canvas with viewport panning (scroll, click-drag, keyboard), scroll
+momentum with friction decay, GLSL shader backgrounds, tiled image backgrounds,
+edge auto-pan during window drag, and compositor-rendered xcursor. 18 Wayland
+protocols implemented including DMA-BUF, popups, and cross-app clipboard.
 
 ## Build & run
 
@@ -102,16 +104,17 @@ src/
 1. **Window appears** — winit backend, xdg-shell, terminal renders *(done)*
 2. **Move and resize** — drag/resize windows, CSD support *(done)*
 3. **Infinite canvas** — viewport panning, scroll momentum, xcursor rendering *(done)*
-4. Canvas background — shader dot-grid
-5. Zoom — GPU-scaled rendering, pinch to zoom
-6. Decorations — SSD fallback, resize grab zones
-7. Layer shell — waybar, fuzzel, notifications
-8. Config file — TOML parsing, user keybindings
-9. udev backend — DRM/KMS, libinput, session management
-10. Trackpad gestures — libinput gesture events, gesture state machine
-11. Multi-monitor — multiple viewports on same canvas
-12. XWayland — X11 app support
-13. Widgets + polish — eww preset, animations, shadows, damage optimization
+4. **Canvas background** — GLSL shaders, tiled images, edge auto-pan *(done)*
+5. Window navigation — Super+C center, Super+Arrow jump, Alt-Tab cycle
+6. Zoom — GPU-scaled rendering, pinch to zoom
+7. Decorations — SSD fallback, resize grab zones
+8. Layer shell — waybar, fuzzel, notifications
+9. Config file — TOML parsing, user keybindings
+10. udev backend — DRM/KMS, libinput, session management
+11. Trackpad gestures — 3-finger pan/hold-to-move, gesture state machine
+12. Multi-monitor — multiple viewports on same canvas
+13. XWayland — X11 app support
+14. Widgets + polish — eww preset, animations, shadows, damage optimization
 
 ## License
 

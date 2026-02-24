@@ -80,77 +80,62 @@ Monitor 0: viewport at (0, 0)       Monitor 1: viewport at (3000, 500)
          ← same infinite canvas →
 ```
 
-## Trackpad gestures
+## Input
 
-All gestures use libinput gesture events. Finger count + start location
-determines the action.
+All input methods — trackpad, mouse, keyboard — feed into the same actions.
+Panning is the most frequent action on an infinite canvas, so there are many
+ways to do it. All pan methods feed into the momentum system — a quick flick
+carries the viewport smoothly until friction stops it.
 
-| Fingers | Type      | Start on  | Action                                             |
-| ------- | --------- | --------- | -------------------------------------------------- |
-| 2       | pan       | desktop   | Pan viewport (scroll the canvas)                   |
-| 2       | pinch     | desktop   | Zoom out (bird's eye) / zoom in (to 1.0)           |
-| 3       | pan       | on window | Move that window                                   |
-| 3+Super | pan       | on window | Resize that window                                 |
-| 3       | pinch     | on window | Toggle fullscreen                                  |
-| 4       | pan       | desktop   | Center nearest window in pan direction (see below) |
-| 4/5     | pinch-in  | anywhere  | Go home — snap viewport to (0, 0)                  |
-| 4/5     | pinch-out | anywhere  | Return to previous position (undo home)            |
+### Trackpad gestures
 
-Note: 4-finger pinch is a toggle: pinch-in saves current `(cx, cy)` and snaps
-to `(0, 0)`. Pinch-out (or second pinch-in -- for compatibility with modifier+mouse) restores the saved position. Lets you peek at home
-widgets and jump back.
+Requires libinput (udev backend). Finger count + context determines the action.
+Once a gesture starts, the target is **locked for the gesture's duration** (even
+if the surface under the cursor changes mid-gesture).
 
-Note: 4-finger pan "center nearest window": searches from cursor position in
-the pan direction, using a search band perpendicular to the direction. Band
-width: full viewport height for horizontal, full viewport width for vertical,
-interpolated (mid-width to mid-height) for diagonals. Trackpad gives a
-continuous direction vector so diagonals work naturally; keyboard `Super+Arrow`
-is cardinal-only. Skips the currently focused window — everything else is a
-valid target. On match: pan viewport to center the window, focus + raise it,
-and warp cursor to the window's center. The cursor warp enables chaining —
-repeat the gesture to hop window-to-window across the canvas.
-If no window is found in the band, nothing happens.
+| Fingers | Type      | Context   | Action                         |
+| ------- | --------- | --------- | ------------------------------ |
+| 2       | scroll    | on window | Pass through to app            |
+| 2       | scroll    | desktop   | Pan viewport                   |
+| 2       | pinch     | desktop   | Zoom in/out                    |
+| 3       | scroll    | anywhere  | Pan viewport (ignores windows) |
+| 3       | hold+drag | on window | Move window (see below)        |
+| 3+Super | drag      | on window | Resize window                  |
+| 3       | pinch     | on window | Toggle fullscreen              |
+| 4       | scroll    | desktop   | Center nearest window in direction |
+| 4/5     | pinch     | anywhere  | Toggle home (0,0) ↔ previous   |
 
-Note: 2-finger pan/scroll _on a window_ passes through to the app (normal
-scrolling). The compositor only captures 2-finger gestures when they start on
-empty desktop area. Holding `Super` overrides this — `Super` + 2-finger
-pan/pinch on a window controls the viewport instead of the app.
+**3-finger hold-to-move**: Place three fingers on a window, hold ~500ms until
+visual feedback, then drag. Immediate 3-finger scroll always pans — the hold
+disambiguates "drift around" from "pick up." Feedback on grab activation:
+position pulse (window shifts -1px in all directions for ~100ms, then back)
+and cursor changes to grab icon. The pulse is subtle but felt — confirms the
+grab without resizing the window (no configure sent to client).
 
-### Gesture conflict resolution
+**4-finger center**: Searches from cursor in the scroll direction for the
+nearest window (using a viewport-width search band). Centers it, focuses,
+raises, and warps cursor to its center. Repeat to hop window-to-window.
 
-When a gesture starts, the target is determined once and **locked for the
-gesture's duration** (even if the surface under the cursor changes mid-gesture).
-
-Priority order for 2-finger gestures:
-
-1. **Resize grab zone** (~5px window border) → resize that window
-2. **On window surface** → pass through to app (normal scrolling)
-3. **On empty desktop** → viewport pan/zoom
-
-`Super` held → always viewport pan/zoom regardless of what's under the cursor.
-
-3-finger gestures always operate on the window under the cursor at gesture start.
-If the gesture starts on empty desktop, it's a no-op.
-
-### Edge auto-pan (moving windows beyond viewport)
-
-When dragging a window (3-finger pan) and the cursor enters a ~20px edge zone,
-the viewport auto-scrolls in that direction at a constant rate. This lets users
-move windows far across the canvas without releasing and re-panning. Standard
-drag-and-drop UX pattern — familiar from every OS.
+**4/5-finger pinch toggle**: Pinch-in saves position and snaps to (0, 0).
+Pinch-out (or second pinch-in) restores. Peek at home widgets and jump back.
 
 ### Mouse equivalents
 
-For users without a trackpad, or for debugging:
+| Action         | Mouse input                        |
+| -------------- | ---------------------------------- |
+| Pan viewport   | Click-drag on empty canvas         |
+| Pan viewport   | `Super` + left-drag (anywhere)     |
+| Move window    | `Super+Shift` + left-drag          |
+| Resize window  | `Super+Shift` + right-drag         |
+| Zoom           | `Super` + scroll wheel             |
+| Center window  | `Super+Ctrl` + left-drag           |
+| Toggle home    | `Super` + middle-click             |
 
-| Trackpad gesture             | Mouse + modifier equivalent                                 |
-| ---------------------------- | ----------------------------------------------------------- |
-| 2-finger pan (viewport)      | Click-drag on empty canvas, or `Super` + left-drag anywhere |
-| 3-finger pan (move win)      | `Super+Shift` + left-drag                                   |
-| —                            | `Super+Shift` + right-drag → resize window                  |
-| 2-finger pinch (zoom)        | `Super` + scroll wheel                                      |
-| 4-finger pan (center)        | `Super+Ctrl` + left-drag                                    |
-| 4-finger pinch (home toggle) | `Super` + middle-click                                      |
+### Edge auto-pan
+
+When dragging a window to the viewport edge (~20px zone), the viewport
+auto-scrolls in that direction at a constant rate. All 8 directions (corners
+= diagonal). Stops when cursor leaves the zone or the drag ends.
 
 ## Keyboard shortcuts
 
@@ -492,21 +477,24 @@ requiring real hardware (udev/TTY). Milestones 1–8 work entirely in winit.
    rendered cursor. *(done)*
 4. **Canvas background**: shader and tiled image rendering with dot grid
    default. Essential spatial feedback for panning on an infinite canvas.
-5. **Zoom**: GPU-scaled rendering at different zoom levels. Keyboard and
+5. **Window navigation**: `Super+C` center focused window, `Super+Arrow`
+   center nearest window in direction, `Alt-Tab` cycle windows (raise +
+   center). Pure camera math — makes the canvas usable for daily work.
+6. **Zoom**: GPU-scaled rendering at different zoom levels. Keyboard and
    mouse-scroll zoom (pinch-to-zoom comes with trackpad gestures).
-6. **Decorations**: SSD for apps that need it. Resize grab zones with
+7. **Decorations**: SSD for apps that need it. Resize grab zones with
    cursor shape changes on hover.
-7. **Layer shell**: support waybar, fuzzel, mako, notifications. Unlocks
+8. **Layer shell**: support waybar, fuzzel, mako, notifications. Unlocks
    proper app launcher and status bar.
-8. **Config file**: TOML parsing, user-defined keybindings, input settings.
+9. **Config file**: TOML parsing, user-defined keybindings, input settings.
    Required before daily-driving.
-9. **udev backend**: DRM/KMS setup, libinput integration, logind session
-   management. The "run on real hardware" milestone.
-10. **Trackpad gestures**: wire up libinput gesture events. 2-finger pan,
-    3-finger move, pinch to zoom. Gesture state machine with conflict
-    resolution. Requires udev backend for direct libinput access.
-11. **Multi-monitor**: multiple viewports on same canvas. Independent
+10. **udev backend**: DRM/KMS setup, libinput integration, logind session
+    management. The "run on real hardware" milestone.
+11. **Trackpad gestures**: wire up libinput gesture events. 3-finger pan
+    (viewport), 3-finger hold-to-move (window), pinch to zoom. Gesture
+    state machine with conflict resolution. Requires udev backend.
+12. **Multi-monitor**: multiple viewports on same canvas. Independent
     camera/zoom per output. Requires udev backend.
-12. **XWayland**: run X11 apps (Firefox, Steam, etc).
-13. **Widgets + polish**: ship eww preset, animations, shadows, damage
+13. **XWayland**: run X11 apps (Firefox, Steam, etc).
+14. **Widgets + polish**: ship eww preset, animations, shadows, damage
     tracking optimization.

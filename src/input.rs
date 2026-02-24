@@ -103,7 +103,7 @@ impl DriftWm {
                     if let Some(window) = window
                         && let Some(loc) = self.space.element_location(&window)
                     {
-                        let step = 20;
+                        let step = self.config.nudge_step;
                         let offset = match dir {
                             Direction::Up => (0, -step),
                             Direction::Down => (0, step),
@@ -116,7 +116,7 @@ impl DriftWm {
                 }
             }
             Action::PanViewport(dir) => {
-                let step = 100.0;
+                let step = self.config.pan_step;
                 let delta = match dir {
                     Direction::Up => (0.0, -step),
                     Direction::Down => (0.0, step),

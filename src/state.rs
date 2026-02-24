@@ -91,6 +91,10 @@ pub struct DriftWm {
     /// Monotonic frame counter, incremented each render tick.
     pub frame_counter: u64,
 
+    /// Auto-pan velocity when dragging a window to viewport edge.
+    /// Set by MoveSurfaceGrab, cleared when grab ends or cursor leaves edge zone.
+    pub edge_pan_velocity: Option<Point<f64, Logical>>,
+
     // Cursor
     pub cursor_status: CursorImageStatus,
     /// True while a compositor grab (pan/resize) owns the cursor icon.
@@ -165,12 +169,12 @@ impl DriftWm {
         let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&dh);
         let presentation_state = PresentationState::new::<Self>(&dh, 1); // CLOCK_MONOTONIC
 
+        let config = Config::default();
+
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "seat-0");
-        seat.add_keyboard(XkbConfig::default(), 200, 25)
+        seat.add_keyboard(XkbConfig::default(), config.repeat_delay, config.repeat_rate)
             .expect("Failed to add keyboard");
         seat.add_pointer();
-
-        let config = Config::default();
         Self {
             start_time: Instant::now(),
             display_handle: dh,
@@ -189,6 +193,7 @@ impl DriftWm {
             last_scroll_pan: None,
             momentum: MomentumState::new(config.friction),
             frame_counter: 0,
+            edge_pan_velocity: None,
             cursor_status: CursorImageStatus::default_named(),
             grab_cursor: false,
             cursor_buffers: HashMap::new(),
@@ -226,6 +231,31 @@ impl DriftWm {
         let pointer = self.seat.get_pointer().unwrap();
         let pos = pointer.current_location();
         let new_pos = pos + delta;
+        let under = self.surface_under(new_pos);
+        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+        pointer.motion(
+            self,
+            under,
+            &smithay::input::pointer::MotionEvent {
+                location: new_pos,
+                serial,
+                time: self.start_time.elapsed().as_millis() as u32,
+            },
+        );
+        pointer.frame(self);
+    }
+
+    /// Apply edge auto-pan each frame during a window drag near viewport edges.
+    /// Synthetic pointer motion keeps cursor at the same screen position and
+    /// lets the active MoveSurfaceGrab reposition the window automatically.
+    pub fn apply_edge_pan(&mut self) {
+        let Some(velocity) = self.edge_pan_velocity else { return; };
+        self.camera += velocity;
+
+        // Shift pointer canvas position so screen position stays fixed
+        let pointer = self.seat.get_pointer().unwrap();
+        let pos = pointer.current_location();
+        let new_pos = pos + velocity;
         let under = self.surface_under(new_pos);
         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
         pointer.motion(

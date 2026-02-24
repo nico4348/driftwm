@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 driftwm — a trackpad-first infinite canvas Wayland compositor written in Rust. Windows float on an unbounded 2D plane navigated via trackpad gestures (pan, zoom, pinch). No workspaces, no tiling. Built on [smithay](https://github.com/Smithay/smithay).
 
-The project is in early development (milestone 3 complete). See `docs/DESIGN.md` for the full specification and `docs/CAVEATS.md` for architectural pitfalls.
+The project is in early development (milestone 4 complete). See `docs/DESIGN.md` for the full specification and `docs/CAVEATS.md` for architectural pitfalls.
 
 ## Conventions
 

@@ -108,6 +108,18 @@ pub struct Config {
     pub scroll_speed: f64,
     /// Scroll momentum decay factor per frame. 0.92 = snappy, 0.96 = floaty.
     pub friction: f64,
+    /// Pixels per keyboard nudge (Mod+Shift+Arrow).
+    pub nudge_step: i32,
+    /// Pixels per keyboard pan (Mod+Ctrl+Arrow).
+    pub pan_step: f64,
+    /// Keyboard repeat delay (ms) and rate (keys/sec).
+    pub repeat_delay: i32,
+    pub repeat_rate: i32,
+    /// Edge auto-pan: activation zone width in pixels from viewport edge.
+    pub edge_zone: f64,
+    /// Edge auto-pan: speed range (px/frame). Quadratic ramp from min to max.
+    pub edge_pan_min: f64,
+    pub edge_pan_max: f64,
     pub background: BackgroundConfig,
     bindings: HashMap<KeyCombo, Action>,
 }
@@ -217,6 +229,13 @@ impl Default for Config {
             mod_key,
             scroll_speed: 1.5,
             friction: 0.96,
+            nudge_step: 20,
+            pan_step: 100.0,
+            repeat_delay: 200,
+            repeat_rate: 25,
+            edge_zone: 80.0,
+            edge_pan_min: 4.0,
+            edge_pan_max: 30.0,
             background: BackgroundConfig::default(),
             bindings,
         }
