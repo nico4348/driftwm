@@ -1,4 +1,6 @@
-use smithay::utils::{Logical, Point};
+use smithay::utils::{Logical, Point, Size};
+
+use crate::config::Direction;
 
 /// A position in screen-local coordinates (0,0 = top-left of the output).
 #[derive(Debug, Clone, Copy)]
@@ -16,6 +18,66 @@ pub fn screen_to_canvas(screen: ScreenPos, camera: Point<f64, Logical>) -> Canva
 #[inline]
 pub fn canvas_to_screen(canvas: CanvasPos, camera: Point<f64, Logical>) -> ScreenPos {
     ScreenPos(canvas.0 - camera)
+}
+
+/// Compute the camera position that centers a window in the viewport.
+pub fn camera_to_center_window(
+    window_loc: Point<i32, Logical>,
+    window_size: Size<i32, Logical>,
+    viewport_size: Size<i32, Logical>,
+) -> Point<f64, Logical> {
+    let window_center_x = window_loc.x as f64 + window_size.w as f64 / 2.0;
+    let window_center_y = window_loc.y as f64 + window_size.h as f64 / 2.0;
+    let viewport_center_x = viewport_size.w as f64 / 2.0;
+    let viewport_center_y = viewport_size.h as f64 / 2.0;
+    Point::from((
+        window_center_x - viewport_center_x,
+        window_center_y - viewport_center_y,
+    ))
+}
+
+/// Check whether the canvas origin (0, 0) is visible in the current viewport.
+pub fn is_origin_visible(camera: Point<f64, Logical>, viewport_size: Size<i32, Logical>) -> bool {
+    camera.x <= 0.0
+        && 0.0 <= camera.x + viewport_size.w as f64
+        && camera.y <= 0.0
+        && 0.0 <= camera.y + viewport_size.h as f64
+}
+
+/// Find the nearest item in a 90° cone from `origin` in the given direction.
+///
+/// Uses dot/cross product against the direction unit vector: a candidate is
+/// in the cone when `dot > 0 && |cross| <= dot` (i.e. within ±45° of the
+/// direction). Among candidates, picks the nearest by Euclidean distance.
+///
+/// Generic over the item type so it works with `Window` in production and
+/// simple types (e.g. `&str`) in tests.
+pub fn find_nearest<W: PartialEq>(
+    origin: Point<f64, Logical>,
+    dir: &Direction,
+    items: impl Iterator<Item = (W, Point<f64, Logical>)>,
+    skip: Option<&W>,
+) -> Option<W> {
+    let (ux, uy) = dir.to_unit_vec();
+    let mut best: Option<(W, f64)> = None;
+
+    for (item, center) in items {
+        if skip.is_some_and(|s| s == &item) {
+            continue;
+        }
+        let dx = center.x - origin.x;
+        let dy = center.y - origin.y;
+        let dot = dx * ux + dy * uy;
+        let cross = (dx * uy - dy * ux).abs();
+        if dot > 0.0 && cross <= dot {
+            let dist_sq = dx * dx + dy * dy;
+            if best.as_ref().is_none_or(|(_, d)| dist_sq < *d) {
+                best = Some((item, dist_sq));
+            }
+        }
+    }
+
+    best.map(|(w, _)| w)
 }
 
 /// Scroll momentum physics: velocity decays by friction each frame.

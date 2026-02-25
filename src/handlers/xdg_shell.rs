@@ -128,8 +128,18 @@ impl XdgShellHandler for DriftWm {
             .elements()
             .find(|w| w.toplevel().unwrap().wl_surface() == &wl_surface)
             .cloned();
-        if let Some(window) = window {
-            self.space.unmap_elem(&window);
+        if let Some(ref window) = window {
+            // Remove from focus history before unmapping
+            self.focus_history.retain(|w| w != window);
+            // Clamp or clear cycle index if cycling is active
+            if self.cycle_state.is_some() {
+                if self.focus_history.is_empty() {
+                    self.cycle_state = None;
+                } else if let Some(ref mut idx) = self.cycle_state {
+                    *idx = (*idx).min(self.focus_history.len() - 1);
+                }
+            }
+            self.space.unmap_elem(window);
         }
     }
 

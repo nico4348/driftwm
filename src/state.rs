@@ -20,7 +20,7 @@ use smithay::{
     },
 };
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use smithay::backend::allocator::Fourcc;
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufState};
@@ -134,6 +134,18 @@ pub struct DriftWm {
 
     /// Surfaces awaiting their first buffer commit, to be centered once size is known.
     pub pending_center: HashSet<WlSurface>,
+
+    // Window navigation
+    /// Camera animation target. When Some, camera lerps toward this point each frame.
+    pub camera_target: Option<Point<f64, Logical>>,
+    /// Timestamp of the last rendered frame, for delta-time computation.
+    pub last_frame_instant: Instant,
+    /// MRU focus history: index 0 = most recently focused.
+    pub focus_history: Vec<Window>,
+    /// Active Alt-Tab cycling index into focus_history. None when not cycling.
+    pub cycle_state: Option<usize>,
+    /// Saved camera position to return to when toggling home a second time.
+    pub home_return: Option<Point<f64, Logical>>,
 }
 
 /// Per-client state stored by wayland-server for each connected client.
@@ -221,6 +233,11 @@ impl DriftWm {
             presentation_state,
             config,
             pending_center: HashSet::new(),
+            camera_target: None,
+            last_frame_instant: Instant::now(),
+            focus_history: Vec::new(),
+            cycle_state: None,
+            home_return: None,
         }
     }
 
@@ -281,6 +298,7 @@ impl DriftWm {
     /// Apply a viewport pan delta with momentum accumulation.
     /// Call this from any input path that should drift (scroll, click-drag, future gestures).
     pub fn drift_pan(&mut self, delta: Point<f64, Logical>) {
+        self.camera_target = None; // Cancel animation on manual input
         self.momentum.accumulate(delta, self.frame_counter);
         self.camera += delta;
         self.update_output_from_camera();
@@ -292,6 +310,104 @@ impl DriftWm {
         let camera_i32 = self.camera.to_i32_round();
         for output in self.space.outputs().cloned().collect::<Vec<_>>() {
             self.space.map_output(&output, camera_i32);
+        }
+    }
+
+    /// Advance the camera animation toward `camera_target` using frame-rate independent lerp.
+    /// Shifts the pointer by the camera delta so the cursor stays at the same screen position.
+    pub fn apply_camera_animation(&mut self, dt: Duration) {
+        let Some(target) = self.camera_target else {
+            return;
+        };
+
+        let old_camera = self.camera;
+
+        let base = self.config.animation_speed;
+        let reference_dt = 1.0 / 60.0;
+        let dt_secs = dt.as_secs_f64();
+        let factor = 1.0 - (1.0 - base).powf(dt_secs / reference_dt);
+
+        let dx = target.x - self.camera.x;
+        let dy = target.y - self.camera.y;
+
+        // Snap when sub-pixel close
+        if dx * dx + dy * dy < 0.25 {
+            self.camera = target;
+            self.camera_target = None;
+        } else {
+            self.camera = Point::from((
+                self.camera.x + dx * factor,
+                self.camera.y + dy * factor,
+            ));
+        }
+
+        self.update_output_from_camera();
+
+        // Shift pointer so cursor stays at the same screen position
+        let delta = self.camera - old_camera;
+        let pointer = self.seat.get_pointer().unwrap();
+        let pos = pointer.current_location();
+        let new_pos = pos + delta;
+        let under = self.surface_under(new_pos);
+        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+        pointer.motion(
+            self,
+            under,
+            &smithay::input::pointer::MotionEvent {
+                location: new_pos,
+                serial,
+                time: self.start_time.elapsed().as_millis() as u32,
+            },
+        );
+        pointer.frame(self);
+    }
+
+    /// Navigate the viewport to center on a window: raise, focus, animate camera.
+    pub fn navigate_to_window(&mut self, window: &Window) {
+        self.space.raise_element(window, true);
+        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+        let keyboard = self.seat.get_keyboard().unwrap();
+        let surface = window.toplevel().unwrap().wl_surface().clone();
+        keyboard.set_focus(self, Some(FocusTarget(surface)), serial);
+
+        // Compute target camera to center this window
+        let window_loc = self.space.element_location(window).unwrap_or_default();
+        let window_size = window.geometry().size;
+        let viewport_size = self
+            .space
+            .outputs()
+            .next()
+            .and_then(|o| o.current_mode())
+            .map(|m| m.size.to_logical(1))
+            .unwrap_or((1, 1).into());
+        let target = driftwm::canvas::camera_to_center_window(window_loc, window_size, viewport_size);
+
+        self.momentum.stop();
+        self.camera_target = Some(target);
+    }
+
+    /// Update focus history with the given surface (push to front / move to front).
+    /// Should NOT be called during Alt-Tab cycling (history is frozen).
+    pub fn update_focus_history(&mut self, surface: &WlSurface) {
+        let window = self
+            .space
+            .elements()
+            .find(|w| w.toplevel().unwrap().wl_surface() == surface)
+            .cloned();
+        if let Some(window) = window {
+            self.focus_history.retain(|w| w != &window);
+            self.focus_history.insert(0, window);
+        }
+    }
+
+    /// End Alt-Tab cycling: commit the selected window to focus history.
+    pub fn end_cycle(&mut self) {
+        let idx = self.cycle_state.take();
+        if let Some(idx) = idx
+            && let Some(window) = self.focus_history.get(idx).cloned()
+        {
+            self.focus_history.retain(|w| w != &window);
+            self.focus_history.insert(0, window);
         }
     }
 

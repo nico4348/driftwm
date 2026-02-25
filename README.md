@@ -34,13 +34,15 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the full specification.
 
 ## Status
 
-Early development. Current milestone: **5 — Window navigation**.
+Early development. Current milestone: **6 — Zoom**.
 
 The compositor runs nested via winit backend, renders xdg-shell clients on an
 infinite 2D canvas with viewport panning (scroll, click-drag, keyboard), scroll
 momentum with friction decay, GLSL shader backgrounds, tiled image backgrounds,
-edge auto-pan during window drag, and compositor-rendered xcursor. 18 Wayland
-protocols implemented including DMA-BUF, popups, and cross-app clipboard.
+edge auto-pan during window drag, and compositor-rendered xcursor. Animated
+camera navigation between windows (directional cone search, MRU cycling, home
+toggle). 18 Wayland protocols implemented including DMA-BUF, popups, and
+cross-app clipboard.
 
 ## Build & run
 
@@ -68,6 +70,8 @@ The socket name is printed at startup — use that if it differs from `wayland-1
 | `Mod+Q`                 | Close window                        |
 | `Mod+C`                 | Center focused window               |
 | `Mod+Arrow`             | Jump to nearest window in direction |
+| `CycleMod+Tab`          | Cycle windows forward (MRU)         |
+| `CycleMod+Shift+Tab`    | Cycle windows backward              |
 | `Mod+A`                 | Toggle home (0,0) ↔ previous        |
 | `Mod+Shift+Left-click`  | Drag to move window                 |
 | `Mod+Shift+Right-click` | Drag to resize window               |
@@ -89,10 +93,12 @@ Not yet implemented — coming in a later milestone.
 ```
 src/
 ├── main.rs          # entry point, event loop, wayland socket
-├── state.rs         # DriftWm struct, protocol state
-├── config.rs        # keybindings, actions, config
+├── state.rs         # DriftWm struct, protocol state, navigation methods
+├── config.rs        # keybindings, actions, directions, config
+├── canvas.rs        # viewport math, coordinate transforms, cone search
+├── focus.rs         # FocusTarget newtype (keyboard/pointer/touch)
 ├── winit.rs         # winit backend + render loop
-├── input.rs         # keyboard/pointer handling, Alt+click move/resize
+├── input.rs         # keyboard/pointer handling, window navigation
 ├── grabs/
 │   ├── mod.rs       # grab module re-exports
 │   ├── move_grab.rs # interactive window move (PointerGrab)
@@ -110,7 +116,7 @@ src/
 2. **Move and resize** — drag/resize windows, CSD support _(done)_
 3. **Infinite canvas** — viewport panning, scroll momentum, xcursor rendering _(done)_
 4. **Canvas background** — GLSL shaders, tiled images, edge auto-pan _(done)_
-5. Window navigation — Super+C center, Super+Arrow jump, Alt-Tab cycle
+5. **Window navigation** — center, directional jump, Alt-Tab cycle, home toggle _(done)_
 6. Zoom — GPU-scaled rendering, pinch to zoom
 7. Decorations — SSD fallback, resize grab zones
 8. Layer shell — waybar, fuzzel, notifications

@@ -66,6 +66,13 @@ impl SeatHandler for DriftWm {
         let client = focused.and_then(|f| dh.get_client(f.0.id()).ok());
         set_data_device_focus(dh, seat, client.clone());
         set_primary_focus(dh, seat, client);
+
+        // Update focus history (skip during Alt-Tab cycling — history is frozen)
+        if self.cycle_state.is_none()
+            && let Some(focus) = focused
+        {
+            self.update_focus_history(&focus.0);
+        }
     }
 }
 

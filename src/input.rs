@@ -14,8 +14,8 @@ use smithay::{
     wayland::compositor::with_states,
 };
 
-use driftwm::canvas::{CanvasPos, ScreenPos, canvas_to_screen, screen_to_canvas};
-use driftwm::config::{Action, Direction};
+use driftwm::canvas::{self, CanvasPos, ScreenPos, canvas_to_screen, screen_to_canvas};
+use driftwm::config::Action;
 use crate::grabs::{MoveSurfaceGrab, PanGrab, ResizeState, ResizeSurfaceGrab};
 use crate::state::{DriftWm, FocusTarget, log_err};
 
@@ -51,8 +51,18 @@ impl DriftWm {
             serial,
             time,
             |state, modifiers, handle| {
+                // 1. If cycling is active and the cycle modifier was released, end cycle
+                if state.cycle_state.is_some()
+                    && !state.config.cycle_modifier.is_pressed(modifiers)
+                {
+                    state.end_cycle();
+                    return FilterResult::Forward;
+                }
+
                 if key_state == KeyState::Pressed {
                     let sym = handle.modified_sym();
+
+                    // 2. Normal binding lookup (includes cycle bindings)
                     if let Some(action) = state.config.lookup(modifiers, sym) {
                         return FilterResult::Intercept(action.clone());
                     }
@@ -104,27 +114,133 @@ impl DriftWm {
                         && let Some(loc) = self.space.element_location(&window)
                     {
                         let step = self.config.nudge_step;
-                        let offset = match dir {
-                            Direction::Up => (0, -step),
-                            Direction::Down => (0, step),
-                            Direction::Left => (-step, 0),
-                            Direction::Right => (step, 0),
-                        };
+                        let (ux, uy) = dir.to_unit_vec();
+                        let offset = (
+                            (ux * step as f64).round() as i32,
+                            (uy * step as f64).round() as i32,
+                        );
                         let new_loc = loc + Point::from(offset);
                         self.space.map_element(window, new_loc, false);
                     }
                 }
             }
             Action::PanViewport(dir) => {
+                self.camera_target = None;
                 let step = self.config.pan_step;
-                let delta = match dir {
-                    Direction::Up => (0.0, -step),
-                    Direction::Down => (0.0, step),
-                    Direction::Left => (-step, 0.0),
-                    Direction::Right => (step, 0.0),
-                };
+                let (ux, uy) = dir.to_unit_vec();
+                let delta = (ux * step, uy * step);
                 self.camera += Point::from(delta);
                 self.update_output_from_camera();
+            }
+            Action::CenterWindow => {
+                let keyboard = self.seat.get_keyboard().unwrap();
+                if let Some(focus) = keyboard.current_focus() {
+                    let window = self
+                        .space
+                        .elements()
+                        .find(|w| w.toplevel().unwrap().wl_surface() == &focus.0)
+                        .cloned();
+                    if let Some(window) = window {
+                        self.navigate_to_window(&window);
+                    }
+                }
+            }
+            Action::CenterNearest(dir) => {
+                // Origin: focused window center, or viewport center if none
+                let keyboard = self.seat.get_keyboard().unwrap();
+                let focused = keyboard.current_focus().and_then(|focus| {
+                    self.space
+                        .elements()
+                        .find(|w| w.toplevel().unwrap().wl_surface() == &focus.0)
+                        .cloned()
+                });
+
+                let origin = if let Some(ref w) = focused {
+                    let loc = self.space.element_location(w).unwrap_or_default();
+                    let size = w.geometry().size;
+                    Point::from((
+                        loc.x as f64 + size.w as f64 / 2.0,
+                        loc.y as f64 + size.h as f64 / 2.0,
+                    ))
+                } else {
+                    let viewport_size = self
+                        .space
+                        .outputs()
+                        .next()
+                        .and_then(|o| o.current_mode())
+                        .map(|m| m.size.to_logical(1))
+                        .unwrap_or((1, 1).into());
+                    Point::from((
+                        self.camera.x + viewport_size.w as f64 / 2.0,
+                        self.camera.y + viewport_size.h as f64 / 2.0,
+                    ))
+                };
+
+                let windows = self.space.elements().map(|w| {
+                    let loc = self.space.element_location(w).unwrap_or_default();
+                    let size = w.geometry().size;
+                    let center = Point::from((
+                        loc.x as f64 + size.w as f64 / 2.0,
+                        loc.y as f64 + size.h as f64 / 2.0,
+                    ));
+                    (w.clone(), center)
+                }).collect::<Vec<_>>();
+
+                let nearest = canvas::find_nearest(
+                    origin,
+                    dir,
+                    windows.into_iter(),
+                    focused.as_ref(),
+                );
+                if let Some(window) = nearest {
+                    self.navigate_to_window(&window);
+                }
+            }
+            Action::CycleWindows { backward } => {
+                if self.focus_history.is_empty() {
+                    return;
+                }
+
+                let len = self.focus_history.len();
+                if let Some(ref mut idx) = self.cycle_state {
+                    if *backward {
+                        *idx = (*idx + len - 1) % len;
+                    } else {
+                        *idx = (*idx + 1) % len;
+                    }
+                } else {
+                    // First Tab press: jump to previous window (index 1)
+                    self.cycle_state = Some(1 % len);
+                }
+
+                let idx = self.cycle_state.unwrap();
+                if let Some(window) = self.focus_history.get(idx).cloned() {
+                    self.navigate_to_window(&window);
+                }
+            }
+            Action::HomeToggle => {
+                let viewport_size = self
+                    .space
+                    .outputs()
+                    .next()
+                    .and_then(|o| o.current_mode())
+                    .map(|m| m.size.to_logical(1))
+                    .unwrap_or((1, 1).into());
+
+                if canvas::is_origin_visible(self.camera, viewport_size) {
+                    // We're at home — return to saved position if we have one
+                    if let Some(target) = self.home_return.take() {
+                        self.camera_target = Some(target);
+                    }
+                } else {
+                    // Not at home — save current position and go home
+                    self.home_return = Some(self.camera);
+                    let home = Point::from((
+                        -(viewport_size.w as f64) / 2.0,
+                        -(viewport_size.h as f64) / 2.0,
+                    ));
+                    self.camera_target = Some(home);
+                }
             }
         }
     }
@@ -213,7 +329,7 @@ impl DriftWm {
 
             // 2. Mod + left-drag → pan canvas (anywhere)
             if wm_mod && button == BTN_LEFT {
-                let grab = self.make_pan_grab(pos, button);
+                let grab = self.make_pan_grab(pos, button, false);
                 pointer.set_grab(self, grab, serial, Focus::Clear);
                 return;
             }
@@ -233,11 +349,9 @@ impl DriftWm {
                     serial,
                 );
             } else {
-                // 3. Left-click on empty canvas → pan
-                keyboard.set_focus(self, None::<FocusTarget>, serial);
-
+                // 3. Left-click on empty canvas → pan (or click-to-unfocus)
                 if button == BTN_LEFT {
-                    let grab = self.make_pan_grab(pos, button);
+                    let grab = self.make_pan_grab(pos, button, true);
                     pointer.set_grab(self, grab, serial, Focus::Clear);
                     return;
                 }
@@ -391,14 +505,23 @@ impl DriftWm {
     }
 
     /// Build a PanGrab for click-drag viewport panning.
-    fn make_pan_grab(&self, canvas_pos: Point<f64, smithay::utils::Logical>, button: u32) -> PanGrab {
+    fn make_pan_grab(
+        &self,
+        canvas_pos: Point<f64, smithay::utils::Logical>,
+        button: u32,
+        from_empty_canvas: bool,
+    ) -> PanGrab {
+        let screen_pos = canvas_to_screen(CanvasPos(canvas_pos), self.camera).0;
         PanGrab {
             start_data: GrabStartData {
                 focus: None,
                 button,
                 location: canvas_pos,
             },
-            last_screen_pos: canvas_to_screen(CanvasPos(canvas_pos), self.camera).0,
+            last_screen_pos: screen_pos,
+            start_screen_pos: screen_pos,
+            from_empty_canvas,
+            dragged: false,
         }
     }
 

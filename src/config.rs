@@ -1,13 +1,34 @@
 use std::collections::HashMap;
+use std::f64::consts::FRAC_1_SQRT_2;
 
 use smithay::input::keyboard::{Keysym, ModifiersState, keysyms};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Direction {
     Up,
     Down,
     Left,
     Right,
+    UpLeft,
+    UpRight,
+    DownLeft,
+    DownRight,
+}
+
+impl Direction {
+    /// Normalized direction vector for this direction.
+    pub fn to_unit_vec(&self) -> (f64, f64) {
+        match self {
+            Direction::Up => (0.0, -1.0),
+            Direction::Down => (0.0, 1.0),
+            Direction::Left => (-1.0, 0.0),
+            Direction::Right => (1.0, 0.0),
+            Direction::UpLeft => (-FRAC_1_SQRT_2, -FRAC_1_SQRT_2),
+            Direction::UpRight => (FRAC_1_SQRT_2, -FRAC_1_SQRT_2),
+            Direction::DownLeft => (-FRAC_1_SQRT_2, FRAC_1_SQRT_2),
+            Direction::DownRight => (FRAC_1_SQRT_2, FRAC_1_SQRT_2),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -16,6 +37,10 @@ pub enum Action {
     CloseWindow,
     NudgeWindow(Direction),
     PanViewport(Direction),
+    CenterWindow,
+    CenterNearest(Direction),
+    CycleWindows { backward: bool },
+    HomeToggle,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -58,6 +83,36 @@ impl ModKey {
     }
 }
 
+/// Which modifier must be held during window cycling (Alt-Tab style).
+/// Ctrl for dev (GNOME intercepts Alt-Tab); Alt for production.
+#[derive(Clone, Copy, Debug)]
+pub enum CycleModifier {
+    Alt,
+    Ctrl,
+}
+
+impl CycleModifier {
+    pub fn is_pressed(self, state: &ModifiersState) -> bool {
+        match self {
+            CycleModifier::Alt => state.alt,
+            CycleModifier::Ctrl => state.ctrl,
+        }
+    }
+
+    fn base(self) -> Modifiers {
+        match self {
+            CycleModifier::Alt => Modifiers {
+                alt: true,
+                ..Modifiers::EMPTY
+            },
+            CycleModifier::Ctrl => Modifiers {
+                ctrl: true,
+                ..Modifiers::EMPTY
+            },
+        }
+    }
+}
+
 impl Modifiers {
     const EMPTY: Self = Self {
         ctrl: false,
@@ -83,7 +138,7 @@ pub struct KeyCombo {
 }
 
 /// Built-in dot grid shader — used when no shader_path or tile_path is configured.
-pub const DEFAULT_SHADER: &str = include_str!("../assets/shaders/dot_grid.glsl");
+pub const DEFAULT_SHADER: &str = include_str!("../assets/shaders/compass_grid.glsl");
 
 #[derive(Clone, Debug, Default)]
 pub struct BackgroundConfig {
@@ -111,6 +166,10 @@ pub struct Config {
     /// Edge auto-pan: speed range (px/frame). Quadratic ramp from min to max.
     pub edge_pan_min: f64,
     pub edge_pan_max: f64,
+    /// Base lerp factor for camera animation (frame-rate independent). 0.15 = smooth.
+    pub animation_speed: f64,
+    /// Modifier held during window cycling. Release commits selection.
+    pub cycle_modifier: CycleModifier,
     pub background: BackgroundConfig,
     bindings: HashMap<KeyCombo, Action>,
 }
@@ -128,10 +187,12 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         let mod_key = ModKey::Alt;
+        let cycle_modifier = CycleModifier::Ctrl;
         let terminal = detect_terminal();
         tracing::info!("Terminal command: {terminal}");
 
         let m = mod_key.base();
+        let m2 = m.clone();
         let m_shift = Modifiers {
             shift: true,
             ..m.clone()
@@ -139,6 +200,11 @@ impl Default for Config {
         let m_ctrl = Modifiers {
             ctrl: true,
             ..m.clone()
+        };
+        let cyc = cycle_modifier.base();
+        let cyc_shift = Modifiers {
+            shift: true,
+            ..cyc.clone()
         };
 
         let bindings = HashMap::from([
@@ -214,6 +280,66 @@ impl Default for Config {
                 },
                 Action::PanViewport(Direction::Right),
             ),
+            // Home toggle: Mod+a
+            (
+                KeyCombo {
+                    modifiers: m2.clone(),
+                    sym: Keysym::from(keysyms::KEY_a),
+                },
+                Action::HomeToggle,
+            ),
+            // Center focused window: Mod+c
+            (
+                KeyCombo {
+                    modifiers: m2.clone(),
+                    sym: Keysym::from(keysyms::KEY_c),
+                },
+                Action::CenterWindow,
+            ),
+            // Navigate to nearest window: Mod+Arrow
+            (
+                KeyCombo {
+                    modifiers: m2.clone(),
+                    sym: Keysym::from(keysyms::KEY_Up),
+                },
+                Action::CenterNearest(Direction::Up),
+            ),
+            (
+                KeyCombo {
+                    modifiers: m2.clone(),
+                    sym: Keysym::from(keysyms::KEY_Down),
+                },
+                Action::CenterNearest(Direction::Down),
+            ),
+            (
+                KeyCombo {
+                    modifiers: m2.clone(),
+                    sym: Keysym::from(keysyms::KEY_Left),
+                },
+                Action::CenterNearest(Direction::Left),
+            ),
+            (
+                KeyCombo {
+                    modifiers: m2,
+                    sym: Keysym::from(keysyms::KEY_Right),
+                },
+                Action::CenterNearest(Direction::Right),
+            ),
+            // Window cycling: CycleMod+Tab / CycleMod+Shift+Tab
+            (
+                KeyCombo {
+                    modifiers: cyc,
+                    sym: Keysym::from(keysyms::KEY_Tab),
+                },
+                Action::CycleWindows { backward: false },
+            ),
+            (
+                KeyCombo {
+                    modifiers: cyc_shift,
+                    sym: Keysym::from(keysyms::KEY_ISO_Left_Tab),
+                },
+                Action::CycleWindows { backward: true },
+            ),
         ]);
 
         Self {
@@ -227,6 +353,8 @@ impl Default for Config {
             edge_zone: 100.0,
             edge_pan_min: 4.0,
             edge_pan_max: 30.0,
+            animation_speed: 0.3,
+            cycle_modifier,
             background: BackgroundConfig::default(),
             bindings,
         }

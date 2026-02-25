@@ -178,14 +178,19 @@ pub fn init_winit(
             log_err("dispatch_clients", data.display.dispatch_clients(&mut data.state));
             log_err("flush_clients", data.display.flush_clients());
 
+            // --- Delta time ---
+            let now = std::time::Instant::now();
+            let dt = now - data.state.last_frame_instant;
+            data.state.last_frame_instant = now;
+
             // --- Scroll momentum ---
             data.state.apply_scroll_momentum();
 
             // --- Edge auto-pan (window drag near viewport edges) ---
             data.state.apply_edge_pan();
 
-            // --- Sync camera → output position ---
-            data.state.update_output_from_camera();
+            // --- Camera animation (window navigation) ---
+            data.state.apply_camera_animation(dt);
 
             // --- Update cached background element (before taking backend) ---
             let camera_moved = data.state.camera != data.state.last_rendered_camera;

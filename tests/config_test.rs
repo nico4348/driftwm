@@ -1,5 +1,5 @@
 use driftwm::config::{Action, Config, Direction};
-use smithay::input::keyboard::{ModifiersState, Keysym, keysyms};
+use smithay::input::keyboard::{Keysym, ModifiersState, keysyms};
 
 /// Build a ModifiersState with only the specified flags set.
 fn mods(alt: bool, ctrl: bool, shift: bool, logo: bool) -> ModifiersState {
@@ -146,7 +146,10 @@ fn alt_ctrl_down_resolves_to_pan_viewport_down() {
 fn unbound_key_returns_none() {
     let config = Config::default();
     let result = config.lookup(&no_mods(), Keysym::from(keysyms::KEY_a));
-    assert!(result.is_none(), "bare 'a' with no modifiers should not be bound");
+    assert!(
+        result.is_none(),
+        "bare 'a' with no modifiers should not be bound"
+    );
 }
 
 #[test]
@@ -154,14 +157,20 @@ fn ctrl_return_returns_none_when_only_alt_return_is_bound() {
     let config = Config::default();
     let ctrl_only = mods(false, true, false, false);
     let result = config.lookup(&ctrl_only, Keysym::from(keysyms::KEY_Return));
-    assert!(result.is_none(), "Ctrl+Return should not be bound (only Alt+Return is)");
+    assert!(
+        result.is_none(),
+        "Ctrl+Return should not be bound (only Alt+Return is)"
+    );
 }
 
 #[test]
 fn bare_return_returns_none() {
     let config = Config::default();
     let result = config.lookup(&no_mods(), Keysym::from(keysyms::KEY_Return));
-    assert!(result.is_none(), "Return without modifiers should not be bound");
+    assert!(
+        result.is_none(),
+        "Return without modifiers should not be bound"
+    );
 }
 
 #[test]
@@ -170,4 +179,119 @@ fn alt_shift_return_returns_none() {
     // Alt+Shift+Return is not explicitly bound — only Alt+Return and Alt+Shift+Arrows are
     let result = config.lookup(&alt_shift(), Keysym::from(keysyms::KEY_Return));
     assert!(result.is_none(), "Alt+Shift+Return should not be bound");
+}
+
+// --- Alt+a → HomeToggle ---
+
+#[test]
+fn alt_a_resolves_to_home_toggle() {
+    let config = Config::default();
+    let result = config.lookup(&alt(), Keysym::from(keysyms::KEY_a));
+    assert!(result.is_some(), "Alt+a should be bound");
+    assert!(
+        matches!(result.unwrap(), Action::HomeToggle),
+        "Alt+a should resolve to HomeToggle"
+    );
+}
+
+// --- Alt+c → CenterWindow ---
+
+#[test]
+fn alt_c_resolves_to_center_window() {
+    let config = Config::default();
+    let result = config.lookup(&alt(), Keysym::from(keysyms::KEY_c));
+    assert!(result.is_some(), "Alt+c should be bound");
+    assert!(
+        matches!(result.unwrap(), Action::CenterWindow),
+        "Alt+c should resolve to CenterWindow"
+    );
+}
+
+#[test]
+fn alt_c_does_not_conflict_with_existing_bindings() {
+    let config = Config::default();
+    // Alt+c must be CenterWindow, not CloseWindow or anything else
+    let result = config.lookup(&alt(), Keysym::from(keysyms::KEY_c));
+    assert!(
+        !matches!(result, Some(Action::CloseWindow)),
+        "Alt+c must not resolve to CloseWindow (that is Alt+q)"
+    );
+}
+
+// --- Alt+Arrow → CenterNearest ---
+
+#[test]
+fn alt_up_resolves_to_center_nearest_up() {
+    let config = Config::default();
+    let result = config.lookup(&alt(), Keysym::from(keysyms::KEY_Up));
+    assert!(result.is_some(), "Alt+Up should be bound");
+    assert!(
+        matches!(result.unwrap(), Action::CenterNearest(Direction::Up)),
+        "Alt+Up should resolve to CenterNearest(Up)"
+    );
+}
+
+#[test]
+fn alt_down_resolves_to_center_nearest_down() {
+    let config = Config::default();
+    let result = config.lookup(&alt(), Keysym::from(keysyms::KEY_Down));
+    assert!(result.is_some(), "Alt+Down should be bound");
+    assert!(
+        matches!(result.unwrap(), Action::CenterNearest(Direction::Down)),
+        "Alt+Down should resolve to CenterNearest(Down)"
+    );
+}
+
+#[test]
+fn alt_left_resolves_to_center_nearest_left() {
+    let config = Config::default();
+    let result = config.lookup(&alt(), Keysym::from(keysyms::KEY_Left));
+    assert!(result.is_some(), "Alt+Left should be bound");
+    assert!(
+        matches!(result.unwrap(), Action::CenterNearest(Direction::Left)),
+        "Alt+Left should resolve to CenterNearest(Left)"
+    );
+}
+
+#[test]
+fn alt_right_resolves_to_center_nearest_right() {
+    let config = Config::default();
+    let result = config.lookup(&alt(), Keysym::from(keysyms::KEY_Right));
+    assert!(result.is_some(), "Alt+Right should be bound");
+    assert!(
+        matches!(result.unwrap(), Action::CenterNearest(Direction::Right)),
+        "Alt+Right should resolve to CenterNearest(Right)"
+    );
+}
+
+// --- Ctrl+Tab → CycleWindows ---
+
+fn ctrl() -> ModifiersState {
+    mods(false, true, false, false)
+}
+
+fn ctrl_shift() -> ModifiersState {
+    mods(false, true, true, false)
+}
+
+#[test]
+fn ctrl_tab_resolves_to_cycle_windows_forward() {
+    let config = Config::default();
+    let result = config.lookup(&ctrl(), Keysym::from(keysyms::KEY_Tab));
+    assert!(result.is_some(), "Ctrl+Tab should be bound");
+    assert!(
+        matches!(result.unwrap(), Action::CycleWindows { backward: false }),
+        "Ctrl+Tab should resolve to CycleWindows {{ backward: false }}"
+    );
+}
+
+#[test]
+fn ctrl_shift_tab_resolves_to_cycle_windows_backward() {
+    let config = Config::default();
+    let result = config.lookup(&ctrl_shift(), Keysym::from(keysyms::KEY_ISO_Left_Tab));
+    assert!(result.is_some(), "Ctrl+Shift+Tab should be bound");
+    assert!(
+        matches!(result.unwrap(), Action::CycleWindows { backward: true }),
+        "Ctrl+Shift+Tab should resolve to CycleWindows {{ backward: true }}"
+    );
 }
