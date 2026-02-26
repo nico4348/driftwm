@@ -30,6 +30,7 @@ use smithay::wayland::idle_inhibit::IdleInhibitManagerState;
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState;
 use smithay::wayland::pointer_constraints::PointerConstraintsState;
 use smithay::wayland::presentation::PresentationState;
+use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
 use smithay::wayland::selection::wlr_data_control::DataControlState;
@@ -40,8 +41,9 @@ use smithay::backend::renderer::gles::{GlesPixelProgram, GlesRenderer, element::
 use smithay::backend::winit::WinitGraphicsBackend;
 use smithay::utils::{Size, Transform};
 
-use driftwm::canvas::MomentumState;
+use driftwm::canvas::{self, CanvasPos, MomentumState};
 use driftwm::config::Config;
+use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 
 pub use crate::focus::FocusTarget;
 
@@ -145,6 +147,12 @@ pub struct DriftWm {
     pub keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
     pub idle_inhibit_state: IdleInhibitManagerState,
     pub presentation_state: PresentationState,
+    pub layer_shell_state: WlrLayerShellState,
+    pub foreign_toplevel_state: driftwm::protocols::foreign_toplevel::ForeignToplevelManagerState,
+
+    /// True when pointer focus is a layer surface (screen-fixed, not canvas-relative).
+    /// Guards synthetic pointer adjustments in camera/zoom animations.
+    pub pointer_over_layer: bool,
 
     // Keybindings and settings
     pub config: Config,
@@ -212,6 +220,9 @@ impl DriftWm {
         let keyboard_shortcuts_inhibit_state = KeyboardShortcutsInhibitState::new::<Self>(&dh);
         let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&dh);
         let presentation_state = PresentationState::new::<Self>(&dh, 1); // CLOCK_MONOTONIC
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
+        let foreign_toplevel_state =
+            driftwm::protocols::foreign_toplevel::ForeignToplevelManagerState::new::<Self, _>(&dh, |_| true);
 
         let config = Config::default();
 
@@ -263,6 +274,9 @@ impl DriftWm {
             keyboard_shortcuts_inhibit_state,
             idle_inhibit_state,
             presentation_state,
+            layer_shell_state,
+            foreign_toplevel_state,
+            pointer_over_layer: false,
             config,
             pending_center: HashSet::new(),
             camera_target: None,
@@ -290,22 +304,31 @@ impl DriftWm {
         self.execute_action(&action);
     }
 
-    /// Apply scroll momentum each frame. Skips frames where a scroll event
-    /// already moved the camera (via frame counter). Otherwise decays velocity.
-    pub fn apply_scroll_momentum(&mut self) {
-        let Some(delta) = self.momentum.tick(self.frame_counter) else {
-            return;
-        };
+    /// Compute focus target at the given canvas position, respecting whether
+    /// the pointer is currently over a layer surface or a canvas window.
+    fn focus_under(
+        &self,
+        canvas_pos: Point<f64, Logical>,
+    ) -> Option<(FocusTarget, Point<f64, Logical>)> {
+        if self.pointer_over_layer {
+            let screen_pos =
+                canvas::canvas_to_screen(CanvasPos(canvas_pos), self.camera, self.zoom).0;
+            self.layer_surface_under(
+                screen_pos,
+                canvas_pos,
+                &[WlrLayer::Overlay, WlrLayer::Top, WlrLayer::Bottom, WlrLayer::Background],
+            )
+        } else {
+            self.surface_under(canvas_pos)
+        }
+    }
 
-        self.camera += delta;
-        self.update_output_from_camera();
-
-        // Move pointer so cursor stays at the same screen position
-        let pointer = self.seat.get_pointer().unwrap();
-        let pos = pointer.current_location();
-        let new_pos = pos + delta;
-        let under = self.surface_under(new_pos);
+    /// Send a synthetic pointer motion to keep the cursor at the same screen
+    /// position after a camera or zoom change.
+    fn warp_pointer(&mut self, new_pos: Point<f64, Logical>) {
+        let under = self.focus_under(new_pos);
         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+        let pointer = self.seat.get_pointer().unwrap();
         pointer.motion(
             self,
             under,
@@ -316,6 +339,21 @@ impl DriftWm {
             },
         );
         pointer.frame(self);
+    }
+
+    /// Apply scroll momentum each frame. Skips frames where a scroll event
+    /// already moved the camera (via frame counter). Otherwise decays velocity.
+    pub fn apply_scroll_momentum(&mut self) {
+        let Some(delta) = self.momentum.tick(self.frame_counter) else {
+            return;
+        };
+
+        self.camera += delta;
+        self.update_output_from_camera();
+
+        // Shift pointer canvas position so screen position stays fixed
+        let pos = self.seat.get_pointer().unwrap().current_location();
+        self.warp_pointer(pos + delta);
     }
 
     /// Apply edge auto-pan each frame during a window drag near viewport edges.
@@ -329,21 +367,8 @@ impl DriftWm {
         self.update_output_from_camera();
 
         // Shift pointer canvas position so screen position stays fixed
-        let pointer = self.seat.get_pointer().unwrap();
-        let pos = pointer.current_location();
-        let new_pos = pos + canvas_delta;
-        let under = self.surface_under(new_pos);
-        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-        pointer.motion(
-            self,
-            under,
-            &smithay::input::pointer::MotionEvent {
-                location: new_pos,
-                serial,
-                time: self.start_time.elapsed().as_millis() as u32,
-            },
-        );
-        pointer.frame(self);
+        let pos = self.seat.get_pointer().unwrap().current_location();
+        self.warp_pointer(pos + canvas_delta);
     }
 
     /// Apply a viewport pan delta with momentum accumulation.
@@ -398,21 +423,8 @@ impl DriftWm {
 
         // Shift pointer so cursor stays at the same screen position
         let delta = self.camera - old_camera;
-        let pointer = self.seat.get_pointer().unwrap();
-        let pos = pointer.current_location();
-        let new_pos = pos + delta;
-        let under = self.surface_under(new_pos);
-        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-        pointer.motion(
-            self,
-            under,
-            &smithay::input::pointer::MotionEvent {
-                location: new_pos,
-                serial,
-                time: self.start_time.elapsed().as_millis() as u32,
-            },
-        );
-        pointer.frame(self);
+        let pos = self.seat.get_pointer().unwrap().current_location();
+        self.warp_pointer(pos + delta);
     }
 
     /// Navigate the viewport to center on a window: raise, focus, animate camera.
@@ -492,28 +504,15 @@ impl DriftWm {
 
         // Adjust pointer so cursor stays at the same screen position.
         // screen = (canvas - camera) * zoom  ⟹  new_canvas = screen / new_zoom + camera
-        // = (old_canvas - camera) * old_zoom / new_zoom + camera
         if self.zoom != old_zoom {
-            let pointer = self.seat.get_pointer().unwrap();
-            let pos = pointer.current_location();
+            let pos = self.seat.get_pointer().unwrap().current_location();
             let screen_x = (pos.x - self.camera.x) * old_zoom;
             let screen_y = (pos.y - self.camera.y) * old_zoom;
             let new_pos = Point::from((
                 screen_x / self.zoom + self.camera.x,
                 screen_y / self.zoom + self.camera.y,
             ));
-            let under = self.surface_under(new_pos);
-            let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-            pointer.motion(
-                self,
-                under,
-                &smithay::input::pointer::MotionEvent {
-                    location: new_pos,
-                    serial,
-                    time: self.start_time.elapsed().as_millis() as u32,
-                },
-            );
-            pointer.frame(self);
+            self.warp_pointer(new_pos);
         }
     }
 
@@ -610,6 +609,8 @@ impl DriftWm {
         self.momentum.stop();
         self.overview_return = None;
         self.home_return = None;
+        // Top/Bottom layers are hidden during fullscreen — reset stale pointer state
+        self.pointer_over_layer = false;
 
         // Snap camera to integer for pixel-perfect alignment
         let camera_i32 = self.camera.to_i32_round();

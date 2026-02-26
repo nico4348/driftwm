@@ -34,7 +34,7 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the full specification.
 
 ## Status
 
-Early development. Current milestone: **7 — Layer Shell**.
+Early development. Current milestone: **8 — Config File**.
 
 The compositor runs nested via winit backend, renders xdg-shell clients on an
 infinite 2D canvas with viewport panning (scroll, click-drag, keyboard), scroll
@@ -42,8 +42,9 @@ momentum with friction decay, GPU-scaled zoom (keyboard and scroll-wheel, with
 cursor-anchored zoom and dynamic min-zoom), GLSL shader backgrounds, tiled image
 backgrounds, edge auto-pan during window drag, and compositor-rendered xcursor.
 Animated camera navigation between windows (directional cone search, MRU cycling,
-home toggle). 18 Wayland protocols implemented including DMA-BUF, popups, and
-cross-app clipboard.
+home toggle). Layer shell support for panels/docks (waybar, sfwbar, cairo-dock)
+and launchers (fuzzel), with foreign toplevel management for taskbar integration.
+20 Wayland protocols implemented including DMA-BUF, popups, and cross-app clipboard.
 
 ## Build & run
 
@@ -111,9 +112,13 @@ src/
 │   ├── resize_grab.rs # interactive window resize (PointerGrab)
 │   └── pan_grab.rs  # viewport pan via click-drag (PointerGrab)
 └── handlers/
-    ├── mod.rs       # seat, data device, output delegates
-    ├── compositor.rs # compositor + SHM handlers, resize commit logic
+    ├── mod.rs       # seat, data device, output, foreign toplevel delegates
+    ├── compositor.rs # compositor + SHM handlers, resize commit, layer commit
+    ├── layer_shell.rs # wlr-layer-shell handler
     └── xdg_shell.rs  # xdg-shell (window management, CSD move/resize)
+protocols/
+├── mod.rs           # protocol modules
+└── foreign_toplevel.rs # zwlr-foreign-toplevel-management-v1
 ```
 
 ## Milestones
@@ -124,7 +129,7 @@ src/
 4. **Canvas background** — GLSL shaders, tiled images, edge auto-pan _(done)_
 5. **Window navigation** — center, directional jump, Alt-Tab cycle, home toggle _(done)_
 6. **Zoom** — GPU-scaled rendering, cursor-anchored zoom, dynamic min-zoom _(done)_
-7. Layer shell — waybar, fuzzel, notifications
+7. **Layer shell** — waybar, fuzzel, foreign toplevel management _(done)_
 8. Config file — TOML parsing, user keybindings
 9. udev backend — DRM/KMS, libinput, session management
 10. Trackpad gestures — 3-finger pan/double-tap-drag, gesture state machine

@@ -1,7 +1,9 @@
 use std::cell::RefCell;
 
 use crate::grabs::{ResizeState, has_left, has_top};
-use crate::state::{ClientState, DriftWm};
+use crate::state::{ClientState, DriftWm, FocusTarget};
+use smithay::desktop::layer_map_for_output;
+use smithay::wayland::shell::wlr_layer::{KeyboardInteractivity, LayerSurfaceData};
 use smithay::{
     delegate_compositor, delegate_shm,
     reexports::{
@@ -109,6 +111,12 @@ impl CompositorHandler for DriftWm {
             }
         }
 
+        // Check if this is a layer surface commit (or subsurface of one)
+        if self.handle_layer_commit(surface) {
+            self.popups.commit(surface);
+            return;
+        }
+
         // Handle popup commits
         self.popups.commit(surface);
 
@@ -148,6 +156,82 @@ fn ensure_initial_configure(
 }
 
 impl DriftWm {
+    /// Handle a commit for a layer surface (or subsurface of one).
+    /// Returns true if the surface belonged to a layer, false otherwise.
+    fn handle_layer_commit(
+        &mut self,
+        surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    ) -> bool {
+        // Walk up from surface to find root
+        let mut root = surface.clone();
+        while let Some(parent) = get_parent(&root) {
+            root = parent;
+        }
+
+        // Check if the root surface belongs to any output's layer map
+        let output = self.space.outputs().cloned().collect::<Vec<_>>();
+        let mut found_output = None;
+        for o in &output {
+            let map = layer_map_for_output(o);
+            if map
+                .layer_for_surface(&root, smithay::desktop::WindowSurfaceType::ALL)
+                .is_some()
+            {
+                found_output = Some(o.clone());
+                break;
+            }
+        }
+
+        let Some(output) = found_output else {
+            return false;
+        };
+
+        // Re-arrange layer surfaces and collect state in a single lookup
+        let mut map = layer_map_for_output(&output);
+        map.arrange();
+
+        let initial_configure_sent = with_states(&root, |states| {
+            states
+                .data_map
+                .get::<LayerSurfaceData>()
+                .map(|data| data.lock().unwrap().initial_configure_sent)
+                .unwrap_or(true)
+        });
+
+        let layer_info = map
+            .layer_for_surface(&root, smithay::desktop::WindowSurfaceType::ALL)
+            .map(|l| {
+                let interactivity = l.cached_state().keyboard_interactivity;
+                let layer_surface = l.layer_surface().clone();
+                (interactivity, layer_surface)
+            });
+
+        // Must drop the map guard before calling set_focus (which calls into SeatHandler)
+        drop(map);
+
+        if let Some((interactivity, layer_surface)) = layer_info {
+            if !initial_configure_sent {
+                layer_surface.send_configure();
+            }
+
+            // Only grab Exclusive focus when the keyboard isn't already on this surface
+            // (prevents stealing focus back on every subsequent commit)
+            if interactivity == KeyboardInteractivity::Exclusive {
+                let keyboard = self.seat.get_keyboard().unwrap();
+                let already_focused = keyboard
+                    .current_focus()
+                    .as_ref()
+                    .is_some_and(|f| f.0 == root);
+                if !already_focused {
+                    let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                    keyboard.set_focus(self, Some(FocusTarget(root)), serial);
+                }
+            }
+        }
+
+        true
+    }
+
     /// When resizing from top or left edges, the window position must shift
     /// to compensate for the size change — otherwise the opposite edge moves.
     fn handle_resize_commit(

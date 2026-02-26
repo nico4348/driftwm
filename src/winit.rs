@@ -24,7 +24,10 @@ use smithay::{
 };
 use std::time::Duration;
 
+use smithay::backend::renderer::element::AsRenderElements;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
+use smithay::desktop::layer_map_for_output;
+use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 
 use crate::state::{CalloopData, log_err};
 use driftwm::canvas::{self, CanvasPos, canvas_to_screen};
@@ -34,6 +37,7 @@ render_elements! {
     Background=RescaleRenderElement<PixelShaderElement>,
     Tile=RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>,
     Window=RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
+    Layer=WaylandSurfaceRenderElement<GlesRenderer>,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
@@ -329,18 +333,45 @@ pub fn init_winit(
                             vec![]
                         };
 
-                    // Compose all elements: cursor (top) → windows → background (bottom)
+                    // Build layer surface elements (screen-fixed, NOT zoomed)
+                    let is_fullscreen = data.state.fullscreen.is_some();
+                    let overlay_elements = build_layer_elements(&output, renderer, WlrLayer::Overlay);
+                    let top_elements = if !is_fullscreen {
+                        build_layer_elements(&output, renderer, WlrLayer::Top)
+                    } else {
+                        vec![]
+                    };
+                    let bottom_elements = if !is_fullscreen {
+                        build_layer_elements(&output, renderer, WlrLayer::Bottom)
+                    } else {
+                        vec![]
+                    };
+                    let background_layer_elements =
+                        build_layer_elements(&output, renderer, WlrLayer::Background);
+
+                    // Compose all elements (first = topmost):
+                    // cursor > overlay > top > zoomed_windows > bottom > bg_shader/tiles > background_layers
                     let clear_color = [0.0f32, 0.0, 0.0, 1.0];
                     let mut all_elements: Vec<OutputRenderElements> = Vec::with_capacity(
-                        cursor_elements.len() + zoomed_windows.len() + bg_elements.len(),
+                        cursor_elements.len()
+                            + overlay_elements.len()
+                            + top_elements.len()
+                            + zoomed_windows.len()
+                            + bottom_elements.len()
+                            + bg_elements.len()
+                            + background_layer_elements.len(),
                     );
                     all_elements.extend(
                         cursor_elements
                             .into_iter()
                             .map(OutputRenderElements::Cursor),
                     );
+                    all_elements.extend(overlay_elements);
+                    all_elements.extend(top_elements);
                     all_elements.extend(zoomed_windows);
+                    all_elements.extend(bottom_elements);
                     all_elements.extend(bg_elements);
+                    all_elements.extend(background_layer_elements);
 
                     let result = damage_tracker.render_output(
                         renderer,
@@ -370,6 +401,18 @@ pub fn init_winit(
             // --- Put backend back ---
             data.state.backend = Some(backend);
 
+            // --- Foreign toplevel refresh ---
+            {
+                let keyboard = data.state.seat.get_keyboard().unwrap();
+                let focused = keyboard.current_focus().map(|f| f.0);
+                driftwm::protocols::foreign_toplevel::refresh::<crate::state::DriftWm>(
+                    &mut data.state.foreign_toplevel_state,
+                    &data.state.space,
+                    focused.as_ref(),
+                    &output,
+                );
+            }
+
             // --- Post-render: send frame callbacks to clients ---
             let time = data.state.start_time.elapsed();
             for window in data.state.space.elements() {
@@ -378,9 +421,23 @@ pub fn init_winit(
                 });
             }
 
+            // Layer surface frame callbacks
+            {
+                let layer_map = layer_map_for_output(&output);
+                for layer_surface in layer_map.layers() {
+                    layer_surface.send_frame(
+                        &output,
+                        time,
+                        Some(Duration::ZERO),
+                        |_, _| Some(output.clone()),
+                    );
+                }
+            }
+
             // --- Cleanup ---
             data.state.space.refresh();
             data.state.popups.cleanup();
+            layer_map_for_output(&output).cleanup();
             log_err("flush_clients", data.display.flush_clients());
 
             TimeoutAction::ToDuration(Duration::from_millis(16))
@@ -458,6 +515,36 @@ fn build_tile_background_elements(
         }
         ty += th as i64;
     }
+    elements
+}
+
+/// Build render elements for all layer surfaces on the given layer.
+/// Layer surfaces are screen-fixed (not zoomed), so they use raw WaylandSurfaceRenderElement.
+fn build_layer_elements(
+    output: &Output,
+    renderer: &mut GlesRenderer,
+    layer: WlrLayer,
+) -> Vec<OutputRenderElements> {
+    let map = layer_map_for_output(output);
+    let output_scale = output.current_scale().fractional_scale();
+    let mut elements = Vec::new();
+
+    for surface in map.layers_on(layer).rev() {
+        let geo = map.layer_geometry(surface).unwrap_or_default();
+        let loc = geo.loc.to_physical_precise_round(output_scale);
+        elements.extend(
+            surface
+                .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
+                    renderer,
+                    loc,
+                    smithay::utils::Scale::from(output_scale),
+                    1.0,
+                )
+                .into_iter()
+                .map(OutputRenderElements::Layer),
+        );
+    }
+
     elements
 }
 

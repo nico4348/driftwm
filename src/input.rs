@@ -5,13 +5,17 @@ use smithay::{
         AbsolutePositionEvent, Axis, ButtonState, Event, InputBackend, InputEvent, KeyState,
         KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
     },
+    desktop::{layer_map_for_output, WindowSurfaceType},
     input::{
         keyboard::FilterResult,
         pointer::{AxisFrame, ButtonEvent, CursorIcon, CursorImageStatus, Focus, GrabStartData, MotionEvent},
     },
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel,
     utils::{Point, SERIAL_COUNTER},
-    wayland::compositor::with_states,
+    wayland::{
+        compositor::with_states,
+        shell::wlr_layer::Layer as WlrLayer,
+    },
 };
 
 use driftwm::canvas::{self, CanvasPos, ScreenPos, canvas_to_screen, screen_to_canvas};
@@ -376,22 +380,43 @@ impl DriftWm {
 
         // position_transformed gives screen-local coords (0..width, 0..height)
         let screen_pos = event.position_transformed(output_geo.size);
-        // Convert to canvas coords: canvas = screen / zoom + camera
         let canvas_pos = screen_to_canvas(ScreenPos(screen_pos), self.camera, self.zoom).0;
-
         let serial = SERIAL_COUNTER.next_serial();
+        let time = Event::time_msec(&event);
         let pointer = self.seat.get_pointer().unwrap();
-        let under = self.surface_under(canvas_pos);
 
-        pointer.motion(
-            self,
-            under,
-            &MotionEvent {
-                location: canvas_pos,
-                serial,
-                time: Event::time_msec(&event),
-            },
-        );
+        // Pointer always stays in canvas coords so cursor rendering and grabs
+        // work consistently. Layer surface focus locations are adjusted to
+        // compensate (see layer_surface_under).
+
+        // 1. Check Overlay and Top layers at screen coords
+        if let Some(hit) = self.layer_surface_under(screen_pos, canvas_pos, &[WlrLayer::Overlay, WlrLayer::Top]) {
+            self.pointer_over_layer = true;
+            pointer.motion(self, Some(hit), &MotionEvent { location: canvas_pos, serial, time });
+            pointer.frame(self);
+            return;
+        }
+
+        // 2. Check canvas windows at canvas coords
+        let under = self.surface_under(canvas_pos);
+        if under.is_some() {
+            self.pointer_over_layer = false;
+            pointer.motion(self, under, &MotionEvent { location: canvas_pos, serial, time });
+            pointer.frame(self);
+            return;
+        }
+
+        // 3. Check Bottom and Background layers at screen coords
+        if let Some(hit) = self.layer_surface_under(screen_pos, canvas_pos, &[WlrLayer::Bottom, WlrLayer::Background]) {
+            self.pointer_over_layer = true;
+            pointer.motion(self, Some(hit), &MotionEvent { location: canvas_pos, serial, time });
+            pointer.frame(self);
+            return;
+        }
+
+        // 4. No hit — empty canvas
+        self.pointer_over_layer = false;
+        pointer.motion(self, None, &MotionEvent { location: canvas_pos, serial, time });
         pointer.frame(self);
     }
 
@@ -413,6 +438,22 @@ impl DriftWm {
             let keyboard = self.seat.get_keyboard().unwrap();
             let mods = keyboard.modifier_state();
             let wm_mod = self.config.mod_key.is_pressed(&mods);
+
+            // 0. If pointer is over a layer surface, just forward the click
+            // (no compositor grabs — layer surfaces can't be moved/resized)
+            if self.pointer_over_layer {
+                pointer.button(
+                    self,
+                    &ButtonEvent {
+                        button,
+                        state: button_state,
+                        serial,
+                        time: Event::time_msec(&event),
+                    },
+                );
+                pointer.frame(self);
+                return;
+            }
 
             // 1. Mod+Shift + button on window → move (left) or resize (right)
             if wm_mod && mods.shift {
@@ -561,6 +602,26 @@ impl DriftWm {
     }
 
     fn on_pointer_axis<I: InputBackend>(&mut self, event: I::PointerAxisEvent) {
+        // When pointer is over a layer surface, forward scroll directly (no pan/zoom)
+        if self.pointer_over_layer {
+            let pointer = self.seat.get_pointer().unwrap();
+            let mut frame = AxisFrame::new(Event::time_msec(&event))
+                .source(event.source());
+            for axis in [Axis::Horizontal, Axis::Vertical] {
+                if let Some(amount) = event.amount(axis) {
+                    frame = frame
+                        .value(axis, amount)
+                        .relative_direction(axis, event.relative_direction(axis));
+                }
+                if let Some(v120) = event.amount_v120(axis) {
+                    frame = frame.v120(axis, v120 as i32);
+                }
+            }
+            pointer.axis(self, frame);
+            pointer.frame(self);
+            return;
+        }
+
         // During fullscreen, forward all scroll to the app (no pan/zoom)
         if self.fullscreen.is_some() {
             let pointer = self.seat.get_pointer().unwrap();
@@ -725,12 +786,44 @@ impl DriftWm {
                 window
                     .surface_under(
                         pos - window_loc.to_f64(),
-                        smithay::desktop::WindowSurfaceType::ALL,
+                        WindowSurfaceType::ALL,
                     )
                     .map(|(surface, surface_loc)| {
                         (FocusTarget(surface), (surface_loc + window_loc).to_f64())
                     })
             })
+    }
+
+    /// Find a layer surface under the given screen-space position.
+    /// Checks the given layers in order.
+    ///
+    /// Returns a focus target with a *canvas-adjusted* location: smithay computes
+    /// surface-local coords as `pointer_pos - focus_loc`, and the pointer is always
+    /// in canvas coords, so we offset the screen-space location by `canvas_pos - screen_pos`
+    /// to keep the surface-local math correct.
+    pub(crate) fn layer_surface_under(
+        &self,
+        screen_pos: Point<f64, smithay::utils::Logical>,
+        canvas_pos: Point<f64, smithay::utils::Logical>,
+        layers: &[WlrLayer],
+    ) -> Option<(FocusTarget, Point<f64, smithay::utils::Logical>)> {
+        let output = self.space.outputs().next()?;
+        let map = layer_map_for_output(output);
+        for &layer in layers {
+            if let Some(surface) = map.layer_under(layer, screen_pos) {
+                let geo = map.layer_geometry(surface).unwrap_or_default();
+                let surface_local = screen_pos - geo.loc.to_f64();
+                if let Some((wl_surface, sub_loc)) =
+                    surface.surface_under(surface_local, WindowSurfaceType::ALL)
+                {
+                    let screen_loc = (sub_loc + geo.loc).to_f64();
+                    // Adjust so: canvas_pos - adjusted = screen_pos - screen_loc
+                    let adjusted = screen_loc + (canvas_pos - screen_pos);
+                    return Some((FocusTarget(wl_surface), adjusted));
+                }
+            }
+        }
+        None
     }
 }
 

@@ -212,7 +212,9 @@ impl Default for Config {
         let mod_key = ModKey::Alt;
         let cycle_modifier = CycleModifier::Ctrl;
         let terminal = detect_terminal();
+        let launcher = detect_launcher();
         tracing::info!("Terminal command: {terminal}");
+        tracing::info!("Launcher command: {launcher}");
 
         let m = mod_key.base();
         let m2 = m.clone();
@@ -237,6 +239,13 @@ impl Default for Config {
                     sym: Keysym::from(keysyms::KEY_Return),
                 },
                 Action::SpawnCommand(terminal),
+            ),
+            (
+                KeyCombo {
+                    modifiers: m.clone(),
+                    sym: Keysym::from(keysyms::KEY_d),
+                },
+                Action::SpawnCommand(launcher),
             ),
             (
                 KeyCombo {
@@ -421,6 +430,26 @@ impl Default for Config {
             bindings,
         }
     }
+}
+
+fn detect_launcher() -> String {
+    if let Ok(launcher) = std::env::var("LAUNCHER")
+        && !launcher.is_empty()
+    {
+        return launcher;
+    }
+    for cmd in ["fuzzel", "wofi", "bemenu-run", "tofi"] {
+        if std::process::Command::new("which")
+            .arg(cmd)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+        {
+            return cmd.to_string();
+        }
+    }
+    "fuzzel".to_string()
 }
 
 fn detect_terminal() -> String {

@@ -6,14 +6,14 @@ use smithay::{
     delegate_xdg_shell,
     desktop::{
         PopupKeyboardGrab, PopupKind, PopupPointerGrab, PopupUngrabStrategy, Window,
-        find_popup_root_surface,
+        find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
     },
     input::pointer::{CursorIcon, CursorImageStatus, Focus, GrabStartData},
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::{Resource, protocol::{wl_output, wl_seat}},
     },
-    utils::Serial,
+    utils::{Rectangle, Serial},
     wayland::{
         compositor::with_states,
         seat::WaylandFocus,
@@ -57,17 +57,12 @@ impl XdgShellHandler for DriftWm {
         self.pending_center.insert(wl_surface);
     }
 
-    fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
+    fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         tracing::info!("New popup surface");
 
-        // Set initial geometry from the positioner and send configure —
-        // the client won't commit a buffer until it receives this.
-        surface.with_pending_state(|state| {
-            state.geometry = positioner.get_geometry();
-        });
-        surface.send_configure().ok();
-
         let popup = PopupKind::Xdg(surface);
+        self.unconstrain_popup(&popup);
+
         if let Err(err) = self.popups.track_popup(popup) {
             tracing::warn!("error tracking popup: {err}");
         }
@@ -112,9 +107,9 @@ impl XdgShellHandler for DriftWm {
         token: u32,
     ) {
         surface.with_pending_state(|state| {
-            state.geometry = positioner.get_geometry();
             state.positioner = positioner;
         });
+        self.unconstrain_popup(&PopupKind::Xdg(surface.clone()));
         surface.send_repositioned(token);
         surface.send_configure().ok();
     }
@@ -279,6 +274,71 @@ fn check_grab(
     }
 
     Some(start_data)
+}
+
+impl DriftWm {
+    /// Apply xdg positioner constraint adjustments so the popup stays within
+    /// the output bounds. Works for both xdg-toplevel and layer-shell parents.
+    pub(crate) fn unconstrain_popup(&self, popup: &PopupKind) {
+        let PopupKind::Xdg(surface) = popup else {
+            return;
+        };
+
+        let Ok(root) = find_popup_root_surface(popup) else {
+            return;
+        };
+
+        // The target rect for constraining, in parent-surface-relative coordinates.
+        // We need to figure out where the root surface is on the output and express
+        // the output bounds relative to the popup's toplevel.
+        let target = if let Some(window) = self
+            .space
+            .elements()
+            .find(|w| w.toplevel().unwrap().wl_surface() == &root)
+        {
+            // Parent is an xdg window — target is the output rect in window-relative coords
+            let window_loc = self.space.element_location(window).unwrap_or_default();
+            let output_geo = self
+                .space
+                .outputs()
+                .next()
+                .and_then(|o| self.space.output_geometry(o))
+                .unwrap_or_default();
+
+            let mut target = output_geo;
+            // Translate output rect into window-relative coordinates
+            target.loc -= window_loc;
+            // Account for nested popups
+            target.loc -= get_popup_toplevel_coords(popup);
+            target
+        } else {
+            // Parent is a layer surface — find it in the layer map
+            let output = self.space.outputs().next().cloned();
+            let output = match output {
+                Some(o) => o,
+                None => return,
+            };
+            let output_geo = self.space.output_geometry(&output).unwrap_or_default();
+            let map = layer_map_for_output(&output);
+            let layer_geo = map
+                .layers()
+                .find(|l| l.wl_surface() == &root)
+                .and_then(|l| map.layer_geometry(l))
+                .unwrap_or_default();
+            drop(map);
+
+            let mut target = Rectangle::from_size(output_geo.size);
+            // Translate into layer-surface-relative coordinates
+            target.loc -= layer_geo.loc;
+            target.loc -= get_popup_toplevel_coords(popup);
+            target
+        };
+
+        surface.with_pending_state(|state| {
+            state.geometry = state.positioner.get_unconstrained_geometry(target);
+        });
+        surface.send_configure().ok();
+    }
 }
 
 /// Map resize edge to the appropriate directional cursor icon.

@@ -1,4 +1,5 @@
 pub mod compositor;
+pub mod layer_shell;
 pub mod xdg_shell;
 
 use crate::state::{DriftWm, FocusTarget};
@@ -13,7 +14,7 @@ use smithay::{
         Seat, SeatHandler, SeatState,
         pointer::{CursorImageStatus, PointerHandle},
     },
-    reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
+    reexports::wayland_server::{Resource, protocol::{wl_output::WlOutput, wl_surface::WlSurface}},
     utils::{Logical, Point},
     wayland::{
         dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
@@ -248,3 +249,57 @@ delegate_idle_inhibit!(DriftWm);
 // --- Presentation ---
 
 delegate_presentation!(DriftWm);
+
+// --- ForeignToplevel ---
+
+use driftwm::protocols::foreign_toplevel::{ForeignToplevelHandler, ForeignToplevelManagerState};
+
+impl ForeignToplevelHandler for DriftWm {
+    fn foreign_toplevel_manager_state(&mut self) -> &mut ForeignToplevelManagerState {
+        &mut self.foreign_toplevel_state
+    }
+
+    fn activate(&mut self, wl_surface: WlSurface) {
+        let window = self
+            .space
+            .elements()
+            .find(|w| w.toplevel().unwrap().wl_surface() == &wl_surface)
+            .cloned();
+        if let Some(window) = window {
+            self.navigate_to_window(&window);
+        }
+    }
+
+    fn close(&mut self, wl_surface: WlSurface) {
+        let window = self
+            .space
+            .elements()
+            .find(|w| w.toplevel().unwrap().wl_surface() == &wl_surface)
+            .cloned();
+        if let Some(window) = window {
+            window.toplevel().unwrap().send_close();
+        }
+    }
+
+    fn set_fullscreen(&mut self, wl_surface: WlSurface, _wl_output: Option<WlOutput>) {
+        let window = self
+            .space
+            .elements()
+            .find(|w| w.toplevel().unwrap().wl_surface() == &wl_surface)
+            .cloned();
+        if let Some(window) = window {
+            self.enter_fullscreen(&window);
+        }
+    }
+
+    fn unset_fullscreen(&mut self, wl_surface: WlSurface) {
+        let is_fullscreen = self.fullscreen.as_ref().is_some_and(|fs| {
+            fs.window.toplevel().unwrap().wl_surface() == &wl_surface
+        });
+        if is_fullscreen {
+            self.exit_fullscreen();
+        }
+    }
+}
+
+driftwm::delegate_foreign_toplevel!(DriftWm);
