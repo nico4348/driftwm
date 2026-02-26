@@ -4,20 +4,21 @@ use smithay::{
         renderer::{
             ImportDma,
             damage::OutputDamageTracker,
-            element::{Kind, memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement}, render_elements},
-            gles::{
-                GlesRenderer, Uniform, UniformName, UniformType,
-                element::PixelShaderElement,
+            element::{
+                Kind,
+                memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
+                render_elements,
+                utils::RescaleRenderElement,
             },
+            gles::{GlesRenderer, Uniform, UniformName, UniformType, element::PixelShaderElement},
         },
         winit::{self, WinitEvent},
     },
-    desktop::space::{SpaceRenderElements, space_render_elements},
     input::pointer::CursorImageStatus,
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::calloop::{
-        timer::{TimeoutAction, Timer},
         EventLoop,
+        timer::{TimeoutAction, Timer},
     },
     utils::{Physical, Point, Rectangle, Transform},
 };
@@ -25,21 +26,23 @@ use std::time::Duration;
 
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 
-use driftwm::canvas::{CanvasPos, canvas_to_screen};
 use crate::state::{CalloopData, log_err};
+use driftwm::canvas::{self, CanvasPos, canvas_to_screen};
 
 render_elements! {
     pub OutputRenderElements<=GlesRenderer>;
-    Background=PixelShaderElement,
-    Space=SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
+    Background=RescaleRenderElement<PixelShaderElement>,
+    Tile=RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>,
+    Window=RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
-/// Uniform declarations for background shaders. u_camera is the viewport position.
-/// Shaders define their own constants (colors, spacing, etc.) directly in GLSL.
-const BG_UNIFORMS: &[UniformName<'static>] = &[
-    UniformName { name: std::borrow::Cow::Borrowed("u_camera"), type_: UniformType::_2f },
-];
+/// Uniform declarations for background shaders.
+/// Shaders receive only u_camera — zoom is handled externally via RescaleRenderElement.
+const BG_UNIFORMS: &[UniformName<'static>] = &[UniformName {
+    name: std::borrow::Cow::Borrowed("u_camera"),
+    type_: UniformType::_2f,
+}];
 
 /// Initialize the winit backend: create a window, set up the output, and
 /// start the render loop timer.
@@ -74,11 +77,17 @@ pub fn init_winit(
     output.create_global::<crate::state::DriftWm>(&data.display.handle());
 
     // Create DMA-BUF global — advertise GPU buffer formats to clients
-    let formats = data.state.backend.as_mut().unwrap().renderer().dmabuf_formats();
-    let dmabuf_global = data.state.dmabuf_state.create_global::<crate::state::DriftWm>(
-        &data.display.handle(),
-        formats,
-    );
+    let formats = data
+        .state
+        .backend
+        .as_mut()
+        .unwrap()
+        .renderer()
+        .dmabuf_formats();
+    let dmabuf_global = data
+        .state
+        .dmabuf_state
+        .create_global::<crate::state::DriftWm>(&data.display.handle(), formats);
     data.state.dmabuf_global = Some(dmabuf_global);
 
     // Compile background shader: explicit path > built-in dot grid default
@@ -91,16 +100,25 @@ pub fn init_winit(
         String::new()
     };
     if !shader_source.is_empty() {
-        let shader = data.state.backend.as_mut().unwrap().renderer()
+        let shader = data
+            .state
+            .backend
+            .as_mut()
+            .unwrap()
+            .renderer()
             .compile_custom_pixel_shader(&shader_source, BG_UNIFORMS)
             .expect("Failed to compile background shader");
         data.state.background_shader = Some(shader.clone());
 
         // Create the cached element once — its stable Id lets the damage tracker
         // recognise it across frames and skip re-rendering when nothing changed.
+        // Area is in canvas space; zoom scaling is applied externally.
         let area = Rectangle::from_size(size.to_logical(1));
         data.state.cached_bg_element = Some(PixelShaderElement::new(
-            shader, area, Some(vec![area]), 1.0,
+            shader,
+            area,
+            Some(vec![area]),
+            1.0,
             vec![Uniform::new("u_camera", (0.0f32, 0.0f32))],
             Kind::Unspecified,
         ));
@@ -114,10 +132,37 @@ pub fn init_winit(
             .unwrap_or_else(|e| panic!("Failed to load tile image {path}: {e}"))
             .into_rgba8();
         let (w, h) = img.dimensions();
+        let raw = img.into_raw();
+
+        // Build (w+2)×(h+2) buffer: duplicate last 2 cols/rows so adjacent
+        // tiles overlap by 2 opaque pixels, covering sub-pixel rounding gaps.
+        let pad = 2usize;
+        let ew = w as usize + pad;
+        let eh = h as usize + pad;
+        let mut expanded = vec![0u8; ew * eh * 4];
+        for y in 0..h as usize {
+            let src_row = y * w as usize * 4;
+            let dst_row = y * ew * 4;
+            expanded[dst_row..dst_row + w as usize * 4]
+                .copy_from_slice(&raw[src_row..src_row + w as usize * 4]);
+            // Duplicate last pixel into the extra columns
+            let last_px = &raw[src_row + (w as usize - 1) * 4..src_row + w as usize * 4];
+            for p in 0..pad {
+                let dst = dst_row + (w as usize + p) * 4;
+                expanded[dst..dst + 4].copy_from_slice(last_px);
+            }
+        }
+        // Duplicate last row into the extra rows
+        let last_row: Vec<u8> = expanded[(h as usize - 1) * ew * 4..h as usize * ew * 4].to_vec();
+        for p in 0..pad {
+            let dst = (h as usize + p) * ew * 4;
+            expanded[dst..dst + ew * 4].copy_from_slice(&last_row);
+        }
+
         let buffer = MemoryRenderBuffer::from_slice(
-            &img.into_raw(),
+            &expanded,
             Fourcc::Abgr8888,
-            (w as i32, h as i32),
+            (ew as i32, eh as i32),
             1,
             Transform::Normal,
             None,
@@ -133,7 +178,9 @@ pub fn init_winit(
     ));
 
     // Map the output into the space at the initial camera position
-    data.state.space.map_output(&output, data.state.camera.to_i32_round());
+    data.state
+        .space
+        .map_output(&output, data.state.camera.to_i32_round());
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
 
@@ -175,13 +222,19 @@ pub fn init_winit(
             }
 
             // --- Dispatch Wayland client messages before rendering ---
-            log_err("dispatch_clients", data.display.dispatch_clients(&mut data.state));
+            log_err(
+                "dispatch_clients",
+                data.display.dispatch_clients(&mut data.state),
+            );
             log_err("flush_clients", data.display.flush_clients());
 
             // --- Delta time ---
             let now = std::time::Instant::now();
             let dt = now - data.state.last_frame_instant;
             data.state.last_frame_instant = now;
+
+            // --- Key repeat for compositor bindings ---
+            data.state.apply_key_repeat();
 
             // --- Scroll momentum ---
             data.state.apply_scroll_momentum();
@@ -192,22 +245,31 @@ pub fn init_winit(
             // --- Camera animation (window navigation) ---
             data.state.apply_camera_animation(dt);
 
+            // --- Zoom animation ---
+            data.state.apply_zoom_animation(dt);
+
             // --- Update cached background element (before taking backend) ---
+            // Shader renders at canvas scale; zoom is applied externally via RescaleRenderElement.
             let camera_moved = data.state.camera != data.state.last_rendered_camera;
+            let zoom_changed = data.state.zoom != data.state.last_rendered_zoom;
             if let Some(ref mut elem) = data.state.cached_bg_element {
                 let scale = output.current_scale().integer_scale();
                 let output_size = output
                     .current_mode()
                     .map(|m| m.size.to_logical(scale))
                     .unwrap_or((1, 1).into());
+                // Canvas-space visible area: viewport / zoom
+                let canvas_w = (output_size.w as f64 / data.state.zoom).ceil() as i32;
+                let canvas_h = (output_size.h as f64 / data.state.zoom).ceil() as i32;
+                let canvas_area = Rectangle::from_size((canvas_w, canvas_h).into());
                 // resize() no-ops when area is unchanged (internal guard)
-                let area = Rectangle::from_size(output_size);
-                elem.resize(area, Some(vec![area]));
-                // update_uniforms() always bumps commit_counter — only call on move
-                if camera_moved {
-                    elem.update_uniforms(vec![
-                        Uniform::new("u_camera", (data.state.camera.x as f32, data.state.camera.y as f32)),
-                    ]);
+                elem.resize(canvas_area, Some(vec![canvas_area]));
+                // update_uniforms() always bumps commit_counter — only call on change
+                if camera_moved || zoom_changed {
+                    elem.update_uniforms(vec![Uniform::new(
+                        "u_camera",
+                        (data.state.camera.x as f32, data.state.camera.y as f32),
+                    )]);
                 }
             }
 
@@ -215,34 +277,52 @@ pub fn init_winit(
             let mut backend = data.state.backend.take().unwrap();
 
             // --- Build cursor element ---
-            let cursor_elements = build_cursor_elements(
-                &mut data.state,
-                backend.renderer(),
-            );
+            let cursor_elements = build_cursor_elements(&mut data.state, backend.renderer());
 
             // --- Render ---
-            let age = backend.buffer_age().unwrap_or(0);
+            let mut age = backend.buffer_age().unwrap_or(0);
+            // Force full repaint when tiles move — all tile elements share the
+            // same buffer Id, so the damage tracker can't track them individually.
+            if data.state.background_tile.is_some() && (camera_moved || zoom_changed) {
+                age = 0;
+            }
             let render_ok = match backend.bind() {
                 Ok((renderer, mut framebuffer)) => {
-                    // Collect space elements (windows)
-                    let space_result = space_render_elements(
-                        renderer,
-                        [&data.state.space],
-                        &output,
-                        1.0,
+                    // Compute visible canvas rect and collect window elements
+                    let viewport_size = data.state.get_viewport_size();
+                    let visible_rect = canvas::visible_canvas_rect(
+                        data.state.camera.to_i32_round(),
+                        viewport_size,
+                        data.state.zoom,
                     );
-                    let space_elements = match space_result {
-                        Ok(elems) => elems,
-                        Err(err) => {
-                            tracing::warn!("Space render elements error: {err:?}");
-                            vec![]
-                        }
-                    };
+                    let output_scale = output.current_scale().fractional_scale();
+                    let window_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = data
+                        .state
+                        .space
+                        .render_elements_for_region(renderer, &visible_rect, output_scale, 1.0);
 
-                    // Background: shader uses cached element (stable Id), tiles rebuilt each frame
+                    // Wrap each window element in RescaleRenderElement for zoom
+                    let zoomed_windows: Vec<OutputRenderElements> = window_elements
+                        .into_iter()
+                        .map(|elem| {
+                            OutputRenderElements::Window(RescaleRenderElement::from_element(
+                                elem,
+                                Point::<i32, Physical>::from((0, 0)),
+                                data.state.zoom,
+                            ))
+                        })
+                        .collect();
+
+                    // Background: shader or tiled image
                     let bg_elements: Vec<OutputRenderElements> =
                         if let Some(ref elem) = data.state.cached_bg_element {
-                            vec![OutputRenderElements::Background(elem.clone())]
+                            vec![OutputRenderElements::Background(
+                                RescaleRenderElement::from_element(
+                                    elem.clone(),
+                                    Point::<i32, Physical>::from((0, 0)),
+                                    data.state.zoom,
+                                ),
+                            )]
                         } else if data.state.background_tile.is_some() {
                             build_tile_background_elements(&data.state, renderer, &output)
                         } else {
@@ -252,10 +332,14 @@ pub fn init_winit(
                     // Compose all elements: cursor (top) → windows → background (bottom)
                     let clear_color = [0.0f32, 0.0, 0.0, 1.0];
                     let mut all_elements: Vec<OutputRenderElements> = Vec::with_capacity(
-                        cursor_elements.len() + space_elements.len() + bg_elements.len(),
+                        cursor_elements.len() + zoomed_windows.len() + bg_elements.len(),
                     );
-                    all_elements.extend(cursor_elements.into_iter().map(OutputRenderElements::Cursor));
-                    all_elements.extend(space_elements.into_iter().map(OutputRenderElements::Space));
+                    all_elements.extend(
+                        cursor_elements
+                            .into_iter()
+                            .map(OutputRenderElements::Cursor),
+                    );
+                    all_elements.extend(zoomed_windows);
                     all_elements.extend(bg_elements);
 
                     let result = damage_tracker.render_output(
@@ -275,14 +359,13 @@ pub fn init_winit(
                     false
                 }
             };
-            if render_ok
-                && let Err(err) = backend.submit(None)
-            {
+            if render_ok && let Err(err) = backend.submit(None) {
                 tracing::warn!("Submit error: {err:?}");
             }
 
-            // --- Record camera for next-frame change detection ---
+            // --- Record camera+zoom for next-frame change detection ---
             data.state.last_rendered_camera = data.state.camera;
+            data.state.last_rendered_zoom = data.state.zoom;
 
             // --- Put backend back ---
             data.state.backend = Some(backend);
@@ -290,12 +373,9 @@ pub fn init_winit(
             // --- Post-render: send frame callbacks to clients ---
             let time = data.state.start_time.elapsed();
             for window in data.state.space.elements() {
-                window.send_frame(
-                    &output,
-                    time,
-                    Some(Duration::ZERO),
-                    |_, _| Some(output.clone()),
-                );
+                window.send_frame(&output, time, Some(Duration::ZERO), |_, _| {
+                    Some(output.clone())
+                });
             }
 
             // --- Cleanup ---
@@ -311,8 +391,9 @@ pub fn init_winit(
 
 /// Build tiled background elements for the current frame.
 ///
-/// Tile images already have stable Ids (from MemoryRenderBuffer), so the damage
-/// tracker handles them correctly without caching.
+/// Each tile is a (w+2)×(h+2) buffer with the last col/row duplicated,
+/// stepped at the original (w, h) interval. The 1px overlap covers any
+/// sub-pixel rounding gaps from RescaleRenderElement at fractional zoom.
 fn build_tile_background_elements(
     state: &crate::state::DriftWm,
     renderer: &mut GlesRenderer,
@@ -324,44 +405,60 @@ fn build_tile_background_elements(
         .map(|m| m.size.to_logical(scale))
         .unwrap_or((1, 1).into());
 
-    if let Some((tile_buf, tw, th)) = &state.background_tile {
-        let tw = *tw;
-        let th = *th;
-        if tw > 0 && th > 0 {
-            let cam_x = state.camera.x;
-            let cam_y = state.camera.y;
-
-            // First visible tile: snap camera to tile grid (floor toward negative infinity)
-            let start_x = (cam_x / tw as f64).floor() as i64 * tw as i64;
-            let start_y = (cam_y / th as f64).floor() as i64 * th as i64;
-
-            let mut elements = Vec::new();
-            let end_x = (cam_x + output_size.w as f64).ceil() as i64;
-            let end_y = (cam_y + output_size.h as f64).ceil() as i64;
-            let mut ty = start_y;
-            while ty < end_y {
-                let mut tx = start_x;
-                while tx < end_x {
-                    // Canvas position → screen position (subtract camera)
-                    let screen_x = tx as f64 - cam_x;
-                    let screen_y = ty as f64 - cam_y;
-                    let pos: Point<f64, Physical> = (screen_x, screen_y).into();
-
-                    if let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
-                        renderer, pos, tile_buf, None, None, None, Kind::Unspecified,
-                    ) {
-                        elements.push(OutputRenderElements::Cursor(elem));
-                    }
-                    tx += tw as i64;
-                }
-                ty += th as i64;
-            }
-            return elements;
-        }
+    let Some((tile_buf, tw, th)) = &state.background_tile else {
+        return vec![];
+    };
+    let tw = *tw;
+    let th = *th;
+    if tw <= 0 || th <= 0 {
+        return vec![];
     }
 
-    // No background source — solid bg_color via clear color
-    vec![]
+    let cam_x = state.camera.x;
+    let cam_y = state.camera.y;
+    let zoom = state.zoom;
+
+    // Visible canvas area: viewport / zoom
+    let visible_w = output_size.w as f64 / zoom;
+    let visible_h = output_size.h as f64 / zoom;
+
+    // First visible tile: snap camera to tile grid
+    let start_x = (cam_x / tw as f64).floor() as i64 * tw as i64;
+    let start_y = (cam_y / th as f64).floor() as i64 * th as i64;
+    let end_x = (cam_x + visible_w).ceil() as i64;
+    let end_y = (cam_y + visible_h).ceil() as i64;
+
+    let mut elements = Vec::new();
+    let mut ty = start_y;
+    while ty < end_y {
+        let mut tx = start_x;
+        while tx < end_x {
+            let canvas_rel_x = tx as f64 - cam_x;
+            let canvas_rel_y = ty as f64 - cam_y;
+            let pos: Point<f64, Physical> = (canvas_rel_x, canvas_rel_y).into();
+
+            if let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                pos,
+                tile_buf,
+                None,
+                None,
+                None,
+                Kind::Unspecified,
+            ) {
+                elements.push(OutputRenderElements::Tile(
+                    RescaleRenderElement::from_element(
+                        elem,
+                        Point::<i32, Physical>::from((0, 0)),
+                        zoom,
+                    ),
+                ));
+            }
+            tx += tw as i64;
+        }
+        ty += th as i64;
+    }
+    elements
 }
 
 /// Resolve which xcursor name to load for the current cursor status.
@@ -382,7 +479,7 @@ fn build_cursor_elements(
     let pointer = state.seat.get_pointer().unwrap();
     let canvas_pos = pointer.current_location();
     // Custom elements are in screen-local physical coords
-    let screen_pos = canvas_to_screen(CanvasPos(canvas_pos), state.camera).0;
+    let screen_pos = canvas_to_screen(CanvasPos(canvas_pos), state.camera, state.zoom).0;
     let physical_pos: Point<f64, Physical> = (screen_pos.x, screen_pos.y).into();
 
     // Extract cursor name before borrowing state mutably for load_xcursor
@@ -401,7 +498,13 @@ fn build_cursor_elements(
 
     let pos = physical_pos - Point::from((hotspot.x as f64, hotspot.y as f64));
     match MemoryRenderBufferRenderElement::from_buffer(
-        renderer, pos, buffer, None, None, None, Kind::Cursor,
+        renderer,
+        pos,
+        buffer,
+        None,
+        None,
+        None,
+        Kind::Cursor,
     ) {
         Ok(elem) => vec![elem],
         Err(_) => vec![],

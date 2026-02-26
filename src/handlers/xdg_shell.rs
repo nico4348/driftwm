@@ -41,8 +41,8 @@ impl XdgShellHandler for DriftWm {
             .next()
             .and_then(|o| self.space.output_geometry(o))
             .map(|geo| {
-                (self.camera.x as i32 + geo.size.w / 2,
-                 self.camera.y as i32 + geo.size.h / 2)
+                ((self.camera.x + geo.size.w as f64 / (2.0 * self.zoom)) as i32,
+                 (self.camera.y + geo.size.h as f64 / (2.0 * self.zoom)) as i32)
             })
             .unwrap_or((0, 0));
 

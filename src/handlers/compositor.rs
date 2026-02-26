@@ -94,8 +94,8 @@ impl CompositorHandler for DriftWm {
                             output.and_then(|o| self.space.output_geometry(&o))
                         };
                         if let Some(output_geo) = output_geo {
-                            let cx = self.camera.x as i32 + output_geo.size.w / 2 - geo.size.w / 2;
-                            let cy = self.camera.y as i32 + output_geo.size.h / 2 - geo.size.h / 2;
+                            let cx = (self.camera.x + output_geo.size.w as f64 / (2.0 * self.zoom)) as i32 - geo.size.w / 2;
+                            let cy = (self.camera.y + output_geo.size.h as f64 / (2.0 * self.zoom)) as i32 - geo.size.h / 2;
                             self.space.map_element(window.clone(), (cx, cy), false);
                         }
                     } else {

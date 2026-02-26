@@ -41,6 +41,24 @@ pub enum Action {
     CenterNearest(Direction),
     CycleWindows { backward: bool },
     HomeToggle,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    ZoomToFit,
+}
+
+impl Action {
+    /// Actions that should auto-repeat when their key is held.
+    pub fn is_repeatable(&self) -> bool {
+        matches!(
+            self,
+            Action::ZoomIn
+                | Action::ZoomOut
+                | Action::NudgeWindow(_)
+                | Action::PanViewport(_)
+                | Action::CycleWindows { .. }
+        )
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -138,7 +156,7 @@ pub struct KeyCombo {
 }
 
 /// Built-in dot grid shader — used when no shader_path or tile_path is configured.
-pub const DEFAULT_SHADER: &str = include_str!("../assets/shaders/compass_grid.glsl");
+pub const DEFAULT_SHADER: &str = include_str!("../assets/shaders/dot_grid.glsl");
 
 #[derive(Clone, Debug, Default)]
 pub struct BackgroundConfig {
@@ -170,6 +188,10 @@ pub struct Config {
     pub animation_speed: f64,
     /// Modifier held during window cycling. Release commits selection.
     pub cycle_modifier: CycleModifier,
+    /// Zoom step multiplier per keypress. 1.1 = 10% per press.
+    pub zoom_step: f64,
+    /// Padding (canvas pixels) around the bounding box for ZoomToFit.
+    pub zoom_fit_padding: f64,
     pub background: BackgroundConfig,
     bindings: HashMap<KeyCombo, Action>,
 }
@@ -320,7 +342,7 @@ impl Default for Config {
             ),
             (
                 KeyCombo {
-                    modifiers: m2,
+                    modifiers: m2.clone(),
                     sym: Keysym::from(keysyms::KEY_Right),
                 },
                 Action::CenterNearest(Direction::Right),
@@ -340,6 +362,35 @@ impl Default for Config {
                 },
                 Action::CycleWindows { backward: true },
             ),
+            // Zoom controls
+            (
+                KeyCombo {
+                    modifiers: m2.clone(),
+                    sym: Keysym::from(keysyms::KEY_equal),
+                },
+                Action::ZoomIn,
+            ),
+            (
+                KeyCombo {
+                    modifiers: m2.clone(),
+                    sym: Keysym::from(keysyms::KEY_minus),
+                },
+                Action::ZoomOut,
+            ),
+            (
+                KeyCombo {
+                    modifiers: m2.clone(),
+                    sym: Keysym::from(keysyms::KEY_0),
+                },
+                Action::ZoomReset,
+            ),
+            (
+                KeyCombo {
+                    modifiers: m2,
+                    sym: Keysym::from(keysyms::KEY_w),
+                },
+                Action::ZoomToFit,
+            ),
         ]);
 
         Self {
@@ -355,6 +406,8 @@ impl Default for Config {
             edge_pan_max: 30.0,
             animation_speed: 0.3,
             cycle_modifier,
+            zoom_step: 1.1,
+            zoom_fit_padding: 100.0,
             background: BackgroundConfig::default(),
             bindings,
         }

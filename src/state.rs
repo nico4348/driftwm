@@ -37,7 +37,7 @@ use smithay::wayland::xdg_activation::XdgActivationState;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::backend::renderer::gles::{GlesPixelProgram, GlesRenderer, element::PixelShaderElement};
 use smithay::backend::winit::WinitGraphicsBackend;
-use smithay::utils::Transform;
+use smithay::utils::{Size, Transform};
 
 use driftwm::canvas::MomentumState;
 use driftwm::config::Config;
@@ -81,8 +81,15 @@ pub struct DriftWm {
     // Input
     pub seat: Seat<DriftWm>,
 
-    // Viewport / camera
+    // Viewport / camera / zoom
     pub camera: Point<f64, Logical>,
+    pub zoom: f64,
+    /// Zoom animation target. When Some, zoom lerps toward this value each frame.
+    pub zoom_target: Option<f64>,
+    /// Last rendered zoom — for shader/damage change detection.
+    pub last_rendered_zoom: f64,
+    /// Saved (camera, zoom) for ZoomToFit toggle-back.
+    pub overview_return: Option<(Point<f64, Logical>, f64)>,
     /// Timestamp of the last scroll-pan event. Used to keep panning sticky
     /// within a scroll gesture (150ms window) even if a window slides under.
     pub last_scroll_pan: Option<Instant>,
@@ -111,7 +118,8 @@ pub struct DriftWm {
     /// Camera position at last render — used to detect movement and update uniforms.
     pub last_rendered_camera: Point<f64, Logical>,
     /// Pre-loaded tile image for tiled background (loaded once at startup).
-    /// Stores (buffer, width, height) since MemoryRenderBuffer doesn't expose size.
+    /// Buffer is (w+1)×(h+1) with the last col/row duplicated for 1px overlap.
+    /// Stores (buffer, original_width, original_height).
     pub background_tile: Option<(MemoryRenderBuffer, i32, i32)>,
 
     // Protocols
@@ -144,8 +152,13 @@ pub struct DriftWm {
     pub focus_history: Vec<Window>,
     /// Active Alt-Tab cycling index into focus_history. None when not cycling.
     pub cycle_state: Option<usize>,
-    /// Saved camera position to return to when toggling home a second time.
-    pub home_return: Option<Point<f64, Logical>>,
+    /// Saved (camera, zoom) to return to when toggling home a second time.
+    pub home_return: Option<(Point<f64, Logical>, f64)>,
+
+    // Key repeat for compositor bindings (smithay's repeat only applies to
+    // client-forwarded keys, not intercepted compositor actions).
+    /// Currently held repeatable action: (keycode, action, next_fire_time).
+    pub held_action: Option<(u32, driftwm::config::Action, Instant)>,
 }
 
 /// Per-client state stored by wayland-server for each connected client.
@@ -206,6 +219,10 @@ impl DriftWm {
             data_device_state,
             seat,
             camera: Point::from((0.0, 0.0)),
+            zoom: 1.0,
+            zoom_target: None,
+            last_rendered_zoom: f64::NAN,
+            overview_return: None,
             last_scroll_pan: None,
             momentum: MomentumState::new(config.friction),
             frame_counter: 0,
@@ -238,7 +255,23 @@ impl DriftWm {
             focus_history: Vec::new(),
             cycle_state: None,
             home_return: None,
+            held_action: None,
         }
+    }
+
+    /// Fire held compositor action if repeat delay/rate has elapsed.
+    pub fn apply_key_repeat(&mut self) {
+        let Some((_, ref action, next_fire)) = self.held_action else {
+            return;
+        };
+        let now = Instant::now();
+        if now < next_fire {
+            return;
+        }
+        let action = action.clone();
+        let rate_interval = Duration::from_millis(1000 / self.config.repeat_rate.max(1) as u64);
+        self.held_action.as_mut().unwrap().2 = now + rate_interval;
+        self.execute_action(&action);
     }
 
     /// Apply scroll momentum each frame. Skips frames where a scroll event
@@ -274,13 +307,15 @@ impl DriftWm {
     /// lets the active MoveSurfaceGrab reposition the window automatically.
     pub fn apply_edge_pan(&mut self) {
         let Some(velocity) = self.edge_pan_velocity else { return; };
-        self.camera += velocity;
+        // velocity is screen-space speed; convert to canvas delta
+        let canvas_delta = Point::from((velocity.x / self.zoom, velocity.y / self.zoom));
+        self.camera += canvas_delta;
         self.update_output_from_camera();
 
         // Shift pointer canvas position so screen position stays fixed
         let pointer = self.seat.get_pointer().unwrap();
         let pos = pointer.current_location();
-        let new_pos = pos + velocity;
+        let new_pos = pos + canvas_delta;
         let under = self.surface_under(new_pos);
         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
         pointer.motion(
@@ -299,6 +334,8 @@ impl DriftWm {
     /// Call this from any input path that should drift (scroll, click-drag, future gestures).
     pub fn drift_pan(&mut self, delta: Point<f64, Logical>) {
         self.camera_target = None; // Cancel animation on manual input
+        self.zoom_target = None;
+        self.overview_return = None;
         self.momentum.accumulate(delta, self.frame_counter);
         self.camera += delta;
         self.update_output_from_camera();
@@ -363,6 +400,7 @@ impl DriftWm {
     }
 
     /// Navigate the viewport to center on a window: raise, focus, animate camera.
+    /// If returning from overview (ZoomToFit), also restores the saved zoom level.
     pub fn navigate_to_window(&mut self, window: &Window) {
         self.space.raise_element(window, true);
         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
@@ -370,20 +408,97 @@ impl DriftWm {
         let surface = window.toplevel().unwrap().wl_surface().clone();
         keyboard.set_focus(self, Some(FocusTarget(surface)), serial);
 
-        // Compute target camera to center this window
+        // If in overview, restore saved zoom; otherwise keep current zoom
+        let target_zoom = if let Some((_, saved_zoom)) = self.overview_return.take() {
+            saved_zoom
+        } else {
+            self.zoom
+        };
+
         let window_loc = self.space.element_location(window).unwrap_or_default();
         let window_size = window.geometry().size;
-        let viewport_size = self
-            .space
+        let viewport_size = self.get_viewport_size();
+        let target = driftwm::canvas::camera_to_center_window(
+            window_loc, window_size, viewport_size, target_zoom,
+        );
+
+        self.momentum.stop();
+        self.camera_target = Some(target);
+        self.zoom_target = Some(target_zoom);
+    }
+
+    /// Dynamic minimum zoom based on the current window layout.
+    /// Allows zooming out far enough to see all windows.
+    pub fn min_zoom(&self) -> f64 {
+        let viewport = self.get_viewport_size();
+        driftwm::canvas::dynamic_min_zoom(
+            self.space.elements().map(|w| {
+                let loc = self.space.element_location(w).unwrap_or_default();
+                let size = w.geometry().size;
+                (loc, size)
+            }),
+            viewport,
+            self.config.zoom_fit_padding,
+        )
+    }
+
+    /// Logical viewport size from the first output.
+    pub fn get_viewport_size(&self) -> Size<i32, Logical> {
+        self.space
             .outputs()
             .next()
             .and_then(|o| o.current_mode())
             .map(|m| m.size.to_logical(1))
-            .unwrap_or((1, 1).into());
-        let target = driftwm::canvas::camera_to_center_window(window_loc, window_size, viewport_size);
+            .unwrap_or((1, 1).into())
+    }
 
-        self.momentum.stop();
-        self.camera_target = Some(target);
+    /// Advance zoom animation toward `zoom_target` using frame-rate independent lerp.
+    /// Adjusts pointer canvas position so the cursor stays at the same screen position.
+    pub fn apply_zoom_animation(&mut self, dt: Duration) {
+        let Some(target) = self.zoom_target else {
+            return;
+        };
+
+        let old_zoom = self.zoom;
+
+        let base = self.config.animation_speed;
+        let reference_dt = 1.0 / 60.0;
+        let dt_secs = dt.as_secs_f64();
+        let factor = 1.0 - (1.0 - base).powf(dt_secs / reference_dt);
+
+        let dz = target - self.zoom;
+        if dz.abs() < 0.001 {
+            self.zoom = target;
+            self.zoom_target = None;
+        } else {
+            self.zoom += dz * factor;
+        }
+
+        // Adjust pointer so cursor stays at the same screen position.
+        // screen = (canvas - camera) * zoom  ⟹  new_canvas = screen / new_zoom + camera
+        // = (old_canvas - camera) * old_zoom / new_zoom + camera
+        if self.zoom != old_zoom {
+            let pointer = self.seat.get_pointer().unwrap();
+            let pos = pointer.current_location();
+            let screen_x = (pos.x - self.camera.x) * old_zoom;
+            let screen_y = (pos.y - self.camera.y) * old_zoom;
+            let new_pos = Point::from((
+                screen_x / self.zoom + self.camera.x,
+                screen_y / self.zoom + self.camera.y,
+            ));
+            let under = self.surface_under(new_pos);
+            let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+            pointer.motion(
+                self,
+                under,
+                &smithay::input::pointer::MotionEvent {
+                    location: new_pos,
+                    serial,
+                    time: self.start_time.elapsed().as_millis() as u32,
+                },
+            );
+            pointer.frame(self);
+        }
     }
 
     /// Update focus history with the given surface (push to front / move to front).

@@ -34,14 +34,15 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the full specification.
 
 ## Status
 
-Early development. Current milestone: **6 — Zoom**.
+Early development. Current milestone: **7 — Decorations**.
 
 The compositor runs nested via winit backend, renders xdg-shell clients on an
 infinite 2D canvas with viewport panning (scroll, click-drag, keyboard), scroll
-momentum with friction decay, GLSL shader backgrounds, tiled image backgrounds,
-edge auto-pan during window drag, and compositor-rendered xcursor. Animated
-camera navigation between windows (directional cone search, MRU cycling, home
-toggle). 18 Wayland protocols implemented including DMA-BUF, popups, and
+momentum with friction decay, GPU-scaled zoom (keyboard and scroll-wheel, with
+cursor-anchored zoom and dynamic min-zoom), GLSL shader backgrounds, tiled image
+backgrounds, edge auto-pan during window drag, and compositor-rendered xcursor.
+Animated camera navigation between windows (directional cone search, MRU cycling,
+home toggle). 18 Wayland protocols implemented including DMA-BUF, popups, and
 cross-app clipboard.
 
 ## Build & run
@@ -78,6 +79,11 @@ The socket name is printed at startup — use that if it differs from `wayland-1
 | `Mod+Left-click`        | Drag to pan viewport                |
 | `Mod+Shift+Arrow`       | Nudge focused window by 20px        |
 | `Mod+Ctrl+Arrow`        | Pan viewport by step                |
+| `Mod+=`                 | Zoom in                             |
+| `Mod+-`                 | Zoom out                            |
+| `Mod+0`                 | Reset zoom to 100%                  |
+| `Mod+W`                 | Zoom to fit all windows (toggle)    |
+| `Mod+Scroll`            | Zoom at cursor                      |
 
 CSD-initiated move/resize (title bar drag, border drag) also works.
 
@@ -117,7 +123,7 @@ src/
 3. **Infinite canvas** — viewport panning, scroll momentum, xcursor rendering _(done)_
 4. **Canvas background** — GLSL shaders, tiled images, edge auto-pan _(done)_
 5. **Window navigation** — center, directional jump, Alt-Tab cycle, home toggle _(done)_
-6. Zoom — GPU-scaled rendering, pinch to zoom
+6. **Zoom** — GPU-scaled rendering, cursor-anchored zoom, dynamic min-zoom _(done)_
 7. Decorations — SSD fallback, resize grab zones
 8. Layer shell — waybar, fuzzel, notifications
 9. Config file — TOML parsing, user keybindings

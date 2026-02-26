@@ -3,6 +3,7 @@
 //   North → blue, South → red, East → yellow, West → green.
 // Diagonals are natural blends (NE = teal-ish, SW = orange-ish, etc.).
 // Helps you feel where you are on the infinite canvas.
+// Zoom is handled externally (RescaleRenderElement) — shader works in canvas space.
 precision highp float;
 
 varying vec2 v_coords;
@@ -13,7 +14,7 @@ uniform vec2 u_camera;
 
 // --- Tweak these ---
 const vec4 DOT_COLOR = vec4(1.0, 1.0, 1.0, 1.0);
-const float DOT_SPACING = 80.0; // pixels between dots at zoom 1.0
+const float DOT_SPACING = 80.0; // canvas pixels between dots
 const float DOT_RADIUS = 1.0;   // dot radius in canvas pixels
 
 // How far (canvas pixels) before directional tint approaches full strength.
@@ -37,17 +38,12 @@ const vec3 WEST_COLOR  = vec3(0.15, 0.8, 0.3);  // green
 // -------------------
 
 void main() {
-    vec2 screen_pixel = v_coords * size;
-
-    // Full canvas position (for color gradient — NOT wrapped)
-    vec2 canvas_full = screen_pixel + u_camera;
-
-    // Wrapped canvas position (for dot tiling)
-    vec2 canvas_dots = screen_pixel + mod(u_camera, DOT_SPACING);
+    // Canvas position: size is the visible canvas area, u_camera is the offset
+    vec2 canvas_pos = v_coords * size + u_camera;
 
     // --- Directional color gradient ---
     // Sigmoid: maps (-inf, inf) -> (-1, 1) smoothly
-    vec2 norm = canvas_full / (GRADIENT_SCALE + abs(canvas_full));
+    vec2 norm = canvas_pos / (GRADIENT_SCALE + abs(canvas_pos));
 
     // Cardinal weights (each 0 to 1)
     float north = max(-norm.y, 0.0);
@@ -61,15 +57,15 @@ void main() {
               + west  * WEST_COLOR;
 
     // Radial brightness waves (concentric rings from origin)
-    float dist = length(canvas_full);
+    float dist = length(canvas_pos);
     float wave_phase = mod(dist, WAVE_PERIOD);
     float wave = sin(wave_phase / WAVE_PERIOD * 6.2832) * WAVE_STRENGTH;
 
     vec3 bg = BASE_COLOR + tint * TINT_STRENGTH + wave;
 
     // --- Dot grid ---
-    vec2 grid = mod(canvas_dots, DOT_SPACING);
-    vec2 dist_to_dot = min(grid, DOT_SPACING - grid);
+    vec2 canvas_mod = mod(canvas_pos, DOT_SPACING);
+    vec2 dist_to_dot = min(canvas_mod, DOT_SPACING - canvas_mod);
     float d = length(dist_to_dot);
     float dot_alpha = 1.0 - smoothstep(DOT_RADIUS - 0.5, DOT_RADIUS + 0.5, d);
 

@@ -41,6 +41,15 @@ impl DriftWm {
         let time = Event::time_msec(&event);
         let key_state = event.state();
         let keycode = event.key_code();
+        let keycode_u32: u32 = keycode.into();
+
+        // Clear key repeat on release of the held key
+        if key_state == KeyState::Released
+            && let Some((held_keycode, _, _)) = &self.held_action
+            && *held_keycode == keycode_u32
+        {
+            self.held_action = None;
+        }
 
         let keyboard = self.seat.get_keyboard().unwrap();
 
@@ -71,12 +80,20 @@ impl DriftWm {
             },
         );
 
-        if let Some(action) = action {
-            self.execute_action(&action);
+        if let Some(ref action) = action {
+            // Set up key repeat for repeatable actions
+            if action.is_repeatable() {
+                let delay = std::time::Duration::from_millis(self.config.repeat_delay as u64);
+                self.held_action = Some((keycode_u32, action.clone(), std::time::Instant::now() + delay));
+            } else {
+                // Non-repeatable action pressed — cancel any active repeat
+                self.held_action = None;
+            }
+            self.execute_action(action);
         }
     }
 
-    fn execute_action(&mut self, action: &Action) {
+    pub fn execute_action(&mut self, action: &Action) {
         self.momentum.stop();
         match action {
             Action::SpawnCommand(cmd) => {
@@ -126,11 +143,31 @@ impl DriftWm {
             }
             Action::PanViewport(dir) => {
                 self.camera_target = None;
-                let step = self.config.pan_step;
+                self.zoom_target = None;
+                self.overview_return = None;
+                let step = self.config.pan_step / self.zoom;
                 let (ux, uy) = dir.to_unit_vec();
-                let delta = (ux * step, uy * step);
-                self.camera += Point::from(delta);
+                let delta: Point<f64, smithay::utils::Logical> =
+                    Point::from((ux * step, uy * step));
+                self.camera += delta;
                 self.update_output_from_camera();
+
+                // Shift pointer so cursor stays at the same screen position
+                let pointer = self.seat.get_pointer().unwrap();
+                let pos = pointer.current_location();
+                let new_pos = pos + delta;
+                let under = self.surface_under(new_pos);
+                let serial = SERIAL_COUNTER.next_serial();
+                pointer.motion(
+                    self,
+                    under,
+                    &MotionEvent {
+                        location: new_pos,
+                        serial,
+                        time: self.start_time.elapsed().as_millis() as u32,
+                    },
+                );
+                pointer.frame(self);
             }
             Action::CenterWindow => {
                 let keyboard = self.seat.get_keyboard().unwrap();
@@ -163,16 +200,10 @@ impl DriftWm {
                         loc.y as f64 + size.h as f64 / 2.0,
                     ))
                 } else {
-                    let viewport_size = self
-                        .space
-                        .outputs()
-                        .next()
-                        .and_then(|o| o.current_mode())
-                        .map(|m| m.size.to_logical(1))
-                        .unwrap_or((1, 1).into());
+                    let viewport_size = self.get_viewport_size();
                     Point::from((
-                        self.camera.x + viewport_size.w as f64 / 2.0,
-                        self.camera.y + viewport_size.h as f64 / 2.0,
+                        self.camera.x + viewport_size.w as f64 / (2.0 * self.zoom),
+                        self.camera.y + viewport_size.h as f64 / (2.0 * self.zoom),
                     ))
                 };
 
@@ -219,30 +250,96 @@ impl DriftWm {
                 }
             }
             Action::HomeToggle => {
-                let viewport_size = self
-                    .space
-                    .outputs()
-                    .next()
-                    .and_then(|o| o.current_mode())
-                    .map(|m| m.size.to_logical(1))
-                    .unwrap_or((1, 1).into());
+                let viewport_size = self.get_viewport_size();
 
-                if canvas::is_origin_visible(self.camera, viewport_size) {
+                // "At home" means zoom ≈ 1.0 AND origin visible. At lower zoom
+                // the origin is visible from afar, but you're not really home.
+                let at_home = (self.zoom - 1.0).abs() < 0.01
+                    && canvas::is_origin_visible(self.camera, viewport_size, self.zoom);
+
+                if at_home {
                     // We're at home — return to saved position if we have one
-                    if let Some(target) = self.home_return.take() {
-                        self.camera_target = Some(target);
+                    if let Some((target_camera, target_zoom)) = self.home_return.take() {
+                        self.camera_target = Some(target_camera);
+                        self.zoom_target = Some(target_zoom);
                     }
                 } else {
-                    // Not at home — save current position and go home
-                    self.home_return = Some(self.camera);
+                    // Not at home — save current position+zoom and go home at zoom=1.0
+                    self.home_return = Some((self.camera, self.zoom));
+                    self.overview_return = None;
                     let home = Point::from((
                         -(viewport_size.w as f64) / 2.0,
                         -(viewport_size.h as f64) / 2.0,
                     ));
                     self.camera_target = Some(home);
+                    self.zoom_target = Some(1.0);
+                }
+            }
+            Action::ZoomIn => {
+                let new_zoom = (self.zoom * self.config.zoom_step).min(canvas::MAX_ZOOM);
+                let new_zoom = canvas::snap_zoom(new_zoom);
+                self.zoom_to_anchored(new_zoom);
+            }
+            Action::ZoomOut => {
+                let new_zoom = (self.zoom / self.config.zoom_step).max(self.min_zoom());
+                let new_zoom = canvas::snap_zoom(new_zoom);
+                self.zoom_to_anchored(new_zoom);
+            }
+            Action::ZoomReset => {
+                self.zoom_to_anchored(1.0);
+            }
+            Action::ZoomToFit => {
+                if let Some((saved_camera, saved_zoom)) = self.overview_return.take() {
+                    // Toggle back from overview
+                    self.camera_target = Some(saved_camera);
+                    self.zoom_target = Some(saved_zoom);
+                } else {
+                    // Compute bounding box of all windows
+                    let viewport = self.get_viewport_size();
+                    let bbox = canvas::all_windows_bbox(
+                        self.space.elements().map(|w| {
+                            let loc = self.space.element_location(w).unwrap_or_default();
+                            let size = w.geometry().size;
+                            (loc, size)
+                        }),
+                    );
+                    if let Some(bbox) = bbox {
+                        let fit_zoom = canvas::zoom_to_fit(
+                            bbox, viewport, self.config.zoom_fit_padding,
+                        );
+                        // Center camera on bbox center
+                        let bbox_cx = bbox.loc.x as f64 + bbox.size.w as f64 / 2.0;
+                        let bbox_cy = bbox.loc.y as f64 + bbox.size.h as f64 / 2.0;
+                        let new_camera: Point<f64, smithay::utils::Logical> = Point::from((
+                            bbox_cx - viewport.w as f64 / (2.0 * fit_zoom),
+                            bbox_cy - viewport.h as f64 / (2.0 * fit_zoom),
+                        ));
+                        self.overview_return = Some((self.camera, self.zoom));
+                        self.camera_target = Some(new_camera);
+                        self.zoom_target = Some(fit_zoom);
+                    }
                 }
             }
         }
+    }
+
+    /// Animate zoom to `target_zoom`, anchored on viewport center (for keyboard actions).
+    fn zoom_to_anchored(&mut self, target_zoom: f64) {
+        self.overview_return = None;
+        let viewport = self.get_viewport_size();
+        let vp_center_canvas = Point::from((
+            self.camera.x + viewport.w as f64 / (2.0 * self.zoom),
+            self.camera.y + viewport.h as f64 / (2.0 * self.zoom),
+        ));
+        let vp_center_screen = Point::from((
+            viewport.w as f64 / 2.0,
+            viewport.h as f64 / 2.0,
+        ));
+        let new_camera = canvas::zoom_anchor_camera(
+            vp_center_canvas, vp_center_screen, target_zoom,
+        );
+        self.zoom_target = Some(target_zoom);
+        self.camera_target = Some(new_camera);
     }
 
     fn on_pointer_motion_absolute<I: InputBackend>(
@@ -257,8 +354,8 @@ impl DriftWm {
 
         // position_transformed gives screen-local coords (0..width, 0..height)
         let screen_pos = event.position_transformed(output_geo.size);
-        // Convert to canvas coords by adding camera offset
-        let canvas_pos = screen_to_canvas(ScreenPos(screen_pos), self.camera).0;
+        // Convert to canvas coords: canvas = screen / zoom + camera
+        let canvas_pos = screen_to_canvas(ScreenPos(screen_pos), self.camera, self.zoom).0;
 
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().unwrap();
@@ -446,27 +543,76 @@ impl DriftWm {
         let mods = keyboard.modifier_state();
         let wm_mod = self.config.mod_key.is_pressed(&mods);
         let pointer = self.seat.get_pointer().unwrap();
+        let pos = pointer.current_location();
 
-        // Pan viewport when: Mod+scroll, scroll on empty canvas, or
+        // Mod+scroll → zoom (vertical axis), cursor-anchored, immediate (no animation)
+        if wm_mod {
+            // Smooth scroll (trackpad) provides amount(); discrete scroll (mouse wheel)
+            // provides amount_v120() where 120 = one notch. Fall back between them.
+            let v = event.amount(Axis::Vertical)
+                .or_else(|| event.amount_v120(Axis::Vertical).map(|v| v * 15.0 / 120.0))
+                .unwrap_or(0.0);
+            if v != 0.0 {
+                let steps = -v * self.config.scroll_speed / 30.0;
+                let factor = self.config.zoom_step.powf(steps);
+                // No snap_zoom here — continuous scroll needs fine control.
+                // snap_zoom's ±0.05 dead zone blocks small trackpad deltas.
+                let new_zoom = (self.zoom * factor).clamp(self.min_zoom(), canvas::MAX_ZOOM);
+
+                if new_zoom != self.zoom {
+                    self.overview_return = None;
+                    let screen_pos = canvas_to_screen(
+                        CanvasPos(pos), self.camera, self.zoom,
+                    ).0;
+                    self.camera = canvas::zoom_anchor_camera(pos, screen_pos, new_zoom);
+                    self.zoom = new_zoom;
+                    self.zoom_target = None;
+                    self.camera_target = None;
+                    self.momentum.stop();
+                    self.update_output_from_camera();
+
+                    // Re-evaluate focus at the (unchanged) canvas position
+                    let under = self.surface_under(pos);
+                    let serial = SERIAL_COUNTER.next_serial();
+                    pointer.motion(
+                        self,
+                        under,
+                        &MotionEvent {
+                            location: pos,
+                            serial,
+                            time: Event::time_msec(&event),
+                        },
+                    );
+                }
+            }
+            let frame = AxisFrame::new(Event::time_msec(&event));
+            pointer.axis(self, frame);
+            pointer.frame(self);
+            return;
+        }
+
+        // Pan viewport when: scroll on empty canvas, or
         // continuing a recent scroll-pan (within 150ms, so a window
         // sliding under mid-gesture doesn't steal the scroll).
-        let pos = pointer.current_location();
         let over_window = self.space.element_under(pos).is_some();
         let recent_pan = self
             .last_scroll_pan
             .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(150));
-        if wm_mod || !over_window || recent_pan {
+        if !over_window || recent_pan {
             self.last_scroll_pan = Some(std::time::Instant::now());
             let h = event.amount(Axis::Horizontal).unwrap_or(0.0);
             let v = event.amount(Axis::Vertical).unwrap_or(0.0);
             if h != 0.0 || v != 0.0 {
                 let s = self.config.scroll_speed;
-                let delta = Point::from((h * s, v * s));
-                self.drift_pan(delta);
+                // Convert screen delta to canvas delta
+                let canvas_delta: Point<f64, smithay::utils::Logical> = Point::from((
+                    h * s / self.zoom,
+                    v * s / self.zoom,
+                ));
+                self.drift_pan(canvas_delta);
 
-                // Move pointer by same delta so cursor stays at the same
-                // screen position (screen_pos = canvas_pos - camera)
-                let new_pos = pos + delta;
+                // Move pointer by canvas delta so cursor stays at the same screen position
+                let new_pos = pos + canvas_delta;
                 let serial = SERIAL_COUNTER.next_serial();
                 let under = self.surface_under(new_pos);
                 pointer.motion(
@@ -511,7 +657,7 @@ impl DriftWm {
         button: u32,
         from_empty_canvas: bool,
     ) -> PanGrab {
-        let screen_pos = canvas_to_screen(CanvasPos(canvas_pos), self.camera).0;
+        let screen_pos = canvas_to_screen(CanvasPos(canvas_pos), self.camera, self.zoom).0;
         PanGrab {
             start_data: GrabStartData {
                 focus: None,

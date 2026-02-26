@@ -1,4 +1,5 @@
 // Dot grid background — evenly spaced dots that scroll with the canvas.
+// Zoom is handled externally (RescaleRenderElement) — shader works in canvas space.
 // Edit colors, spacing, and dot size directly here.
 precision mediump float;
 
@@ -11,7 +12,7 @@ uniform vec2 u_camera;
 // --- Tweak these ---
 const vec4 BG_COLOR = vec4(0.0, 0.0, 0.0, 1.0);
 const vec4 DOT_COLOR = vec4(1.0, 1.0, 1.0, 1.0);
-const float DOT_SPACING = 80.0; // pixels between dots at zoom 1.0
+const float DOT_SPACING = 80.0; // canvas pixels between dots
 const float DOT_RADIUS = 1.0; // dot radius in canvas pixels
 // -------------------
 

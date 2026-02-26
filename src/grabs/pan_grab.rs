@@ -42,11 +42,11 @@ impl PointerGrab<DriftWm> for PanGrab {
         event: &MotionEvent,
     ) {
         // Recover screen position from canvas coords
-        let current_screen_pos = canvas_to_screen(CanvasPos(event.location), data.camera).0;
+        let current_screen_pos = canvas_to_screen(CanvasPos(event.location), data.camera, data.zoom).0;
         let screen_delta = current_screen_pos - self.last_screen_pos;
 
-        // Dragging right → camera decreases → negate
-        let camera_delta = Point::from((-screen_delta.x, -screen_delta.y));
+        // Dragging right → camera decreases → negate; convert screen→canvas delta
+        let camera_delta = Point::from((-screen_delta.x / data.zoom, -screen_delta.y / data.zoom));
         data.drift_pan(camera_delta);
         self.last_screen_pos = current_screen_pos;
 
