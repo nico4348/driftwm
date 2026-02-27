@@ -34,7 +34,7 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the full specification.
 
 ## Status
 
-Early development. Current milestone: **8 — Config File**.
+Early development. Current milestone: **9 — udev backend**.
 
 The compositor runs nested via winit backend, renders xdg-shell clients on an
 infinite 2D canvas with viewport panning (scroll, click-drag, keyboard), scroll
@@ -45,6 +45,7 @@ Animated camera navigation between windows (directional cone search, MRU cycling
 home toggle). Layer shell support for panels/docks (waybar, sfwbar, cairo-dock)
 and launchers (fuzzel), with foreign toplevel management for taskbar integration.
 20 Wayland protocols implemented including DMA-BUF, popups, and cross-app clipboard.
+All keybindings, mouse bindings, and settings are configurable via TOML.
 
 ## Build & run
 
@@ -93,33 +94,10 @@ More keybinds planned — see [docs/DESIGN.md](docs/DESIGN.md#keyboard-shortcuts
 ## Configuration
 
 Config file: `~/.config/driftwm/config.toml` (respects `XDG_CONFIG_HOME`).
-Not yet implemented — coming in a later milestone.
+See [`config.example.toml`](config.example.toml) for all options with defaults.
 
-## Architecture
-
-```
-src/
-├── main.rs          # entry point, event loop, wayland socket
-├── state.rs         # DriftWm struct, protocol state, navigation methods
-├── config.rs        # keybindings, actions, directions, config
-├── canvas.rs        # viewport math, coordinate transforms, cone search
-├── focus.rs         # FocusTarget newtype (keyboard/pointer/touch)
-├── winit.rs         # winit backend + render loop
-├── input.rs         # keyboard/pointer handling, window navigation
-├── grabs/
-│   ├── mod.rs       # grab module re-exports
-│   ├── move_grab.rs # interactive window move (PointerGrab)
-│   ├── resize_grab.rs # interactive window resize (PointerGrab)
-│   └── pan_grab.rs  # viewport pan via click-drag (PointerGrab)
-└── handlers/
-    ├── mod.rs       # seat, data device, output, foreign toplevel delegates
-    ├── compositor.rs # compositor + SHM handlers, resize commit, layer commit
-    ├── layer_shell.rs # wlr-layer-shell handler
-    └── xdg_shell.rs  # xdg-shell (window management, CSD move/resize)
-protocols/
-├── mod.rs           # protocol modules
-└── foreign_toplevel.rs # zwlr-foreign-toplevel-management-v1
-```
+Missing file uses built-in defaults. Partial configs merge with defaults —
+only specify what you want to change. Use `"none"` to unbind a default binding.
 
 ## Milestones
 
@@ -130,7 +108,7 @@ protocols/
 5. **Window navigation** — center, directional jump, Alt-Tab cycle, home toggle _(done)_
 6. **Zoom** — GPU-scaled rendering, cursor-anchored zoom, dynamic min-zoom _(done)_
 7. **Layer shell** — waybar, fuzzel, foreign toplevel management _(done)_
-8. Config file — TOML parsing, user keybindings
+8. **Config file** — TOML parsing, user keybindings/mouse bindings/settings _(done)_
 9. udev backend — DRM/KMS, libinput, session management
 10. Trackpad gestures — 3-finger pan/double-tap-drag, gesture state machine
 11. Multi-monitor — multiple viewports on same canvas

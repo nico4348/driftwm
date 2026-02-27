@@ -1,0 +1,103 @@
+# driftwm configuration
+# Copy to ~/.config/driftwm/config.toml and uncomment what you want to change.
+# Missing fields use built-in defaults. Invalid entries are logged and skipped.
+
+# Window manager modifier key: "super" (default) or "alt"
+# mod_key = "super"
+
+# Modifier held during window cycling (Alt-Tab style).
+# cycle_modifier = "alt"
+
+[input.keyboard]
+# repeat_rate = 25            # keys/sec
+# repeat_delay = 200          # ms before repeat starts
+
+[input.scroll]
+# speed = 1.5                 # viewport pan multiplier
+# friction = 0.96             # momentum decay (0.90=snappy, 0.98=floaty)
+
+[cursor]
+# theme = "Adwaita"           # sets XCURSOR_THEME
+# size = 24                   # sets XCURSOR_SIZE
+
+[navigation]
+# animation_speed = 0.3       # camera lerp factor (higher = faster)
+# nudge_step = 20             # px per Mod+Shift+Arrow
+# pan_step = 100.0            # px per Mod+Ctrl+Arrow
+
+[navigation.edge_pan]
+# zone = 100.0                # activation zone width (px from viewport edge)
+# speed_min = 4.0             # px/frame at zone boundary
+# speed_max = 30.0            # px/frame at viewport edge
+
+[zoom]
+# step = 1.1                  # multiplier per keypress (1.1 = 10% per press)
+# fit_padding = 100.0         # canvas px padding for zoom-to-fit
+
+[background]
+# shader_path = "~/.config/driftwm/bg.frag"   # custom GLSL fragment shader
+# tile_path = "~/.config/driftwm/tile.png"     # tiled image (mutually exclusive with shader)
+
+# Keyboard bindings: "Modifier+...+Keysym" = "action [arg]"
+# Merges with defaults. Use "none" to unbind a default binding.
+# "Mod" expands to mod_key. Literal modifiers: Alt, Super, Ctrl, Shift.
+# Keysyms are XKB names (case-insensitive): Return, Tab, Up, a, equal, etc.
+#
+# Actions:
+#   exec <cmd>              — spawn a command (whitespace-split; use exec sh -c '...' for complex commands)
+#   close-window            — close the focused window
+#   nudge-window <dir>      — move focused window by nudge_step px
+#   pan-viewport <dir>      — pan camera by pan_step px
+#   center-window           — center viewport on focused window
+#   center-nearest <dir>    — navigate to nearest window in direction
+#   cycle-windows forward   — Alt-Tab style window cycling
+#   cycle-windows backward  — reverse cycle
+#   home-toggle             — toggle between current position and origin
+#   zoom-in / zoom-out      — step zoom
+#   zoom-reset              — zoom to 1.0
+#   zoom-to-fit             — fit all windows in viewport
+#   toggle-fullscreen       — toggle focused window fullscreen
+#   none                    — unbind this key combo
+#
+# Directions: up, down, left, right, up-left, up-right, down-left, down-right
+
+[keybindings]
+# "Mod+Return" = "exec foot"
+# "Mod+d" = "exec fuzzel"
+# "Mod+q" = "close-window"
+# "Mod+f" = "toggle-fullscreen"
+# "Mod+c" = "center-window"
+# "Mod+a" = "home-toggle"
+# "Mod+Up" = "center-nearest up"
+# "Mod+Down" = "center-nearest down"
+# "Mod+Left" = "center-nearest left"
+# "Mod+Right" = "center-nearest right"
+# "Mod+Shift+Up" = "nudge-window up"
+# "Mod+Shift+Down" = "nudge-window down"
+# "Mod+Shift+Left" = "nudge-window left"
+# "Mod+Shift+Right" = "nudge-window right"
+# "Mod+Ctrl+Up" = "pan-viewport up"
+# "Mod+Ctrl+Down" = "pan-viewport down"
+# "Mod+Ctrl+Left" = "pan-viewport left"
+# "Mod+Ctrl+Right" = "pan-viewport right"
+# "Alt+Tab" = "cycle-windows forward"
+# "Alt+Shift+ISO_Left_Tab" = "cycle-windows backward"
+# "Mod+equal" = "zoom-in"
+# "Mod+minus" = "zoom-out"
+# "Mod+0" = "zoom-reset"
+# "Mod+w" = "zoom-to-fit"
+
+# Mouse bindings: "Modifier+...+Trigger" = "action"
+# Only modifier-based bindings — canvas fundamentals are hardcoded:
+#   scroll on empty canvas → pan, drag on empty → pan,
+#   click on window → focus, CSD drag → move/resize
+# Triggers: Left, Right, Middle (buttons), Scroll (axis)
+# Merges with defaults. Use "none" to unbind.
+#
+# Mouse actions: move-window, resize-window, pan-viewport, zoom, none
+
+[mouse]
+# "Mod+Shift+Left" = "move-window"
+# "Mod+Shift+Right" = "resize-window"
+# "Mod+Left" = "pan-viewport"
+# "Mod+Scroll" = "zoom"

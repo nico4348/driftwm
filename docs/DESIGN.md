@@ -36,7 +36,7 @@ trackpad gestures. No workspaces, no tiling — just drift.
 
   Not yet implemented:
   - `wlr-screencopy` — screenshot support (grim)
-  - `wlr-layer-shell` — bars, launchers, notifications (milestone 7)
+  - `ext-image-capture-source` + `ext-image-copy-capture` — newer screenshot/screencast capture (replaces wlr-screencopy, used by xdg-desktop-portal-wlr for OBS/Firefox screen share)
   - `xdg-decoration` — negotiate SSD vs CSD (milestone 12)
   - XWayland — run X11 apps (milestone 13)
 

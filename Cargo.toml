@@ -13,5 +13,7 @@ smithay = { version = "0.7.0", default-features = false, features = [
 ] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 xcursor = "0.3"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

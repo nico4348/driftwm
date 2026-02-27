@@ -6,12 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 driftwm — a trackpad-first infinite canvas Wayland compositor written in Rust. Windows float on an unbounded 2D plane navigated via trackpad gestures (pan, zoom, pinch). No workspaces, no tiling. Built on [smithay](https://github.com/Smithay/smithay).
 
-The project is in early development (milestone 7 complete). See `docs/DESIGN.md` for the full specification and `docs/CAVEATS.md` for architectural pitfalls.
+The project is in early development (milestone 8 complete). See `docs/DESIGN.md` for the full specification and `docs/CAVEATS.md` for architectural pitfalls.
 
 ## Conventions
 
 - Documentation files (except README.md) live in `docs/`.
 - Config path: `~/.config/driftwm/config.toml` (respects `XDG_CONFIG_HOME`).
+
+## Code Style
+
+- Write self-documenting code: clear names, obvious structure, minimal comments.
+- No section-separator comments (e.g. `// ---- Protocols ----` or `// === Input ===`). Code structure should be clear from the code itself.
+- Comments explain *why*, not *what*. Don't restate what the code does.
+- Brief doc comments (`///`) on public functions are fine when the signature isn't self-explanatory.
+- Inline comments for non-obvious logic (smithay quirks, coordinate space tricks) are good.
 
 ## Build & Run
 
@@ -32,19 +40,19 @@ The compositor uses a **camera/viewport** model: the screen is a viewport onto a
 
 Current source layout:
 
-- `state.rs` — DriftWm struct, CalloopData, FullscreenState, ClientState, camera/zoom animation, focus history, key repeat
-- `config.rs` — keybindings, actions (SpawnCommand, CloseWindow, NudgeWindow, PanViewport, CenterWindow, CenterNearest, CycleWindows, HomeToggle, Zoom*, ToggleFullscreen), config
+- `state/` — `mod.rs` (DriftWm struct, CalloopData, FullscreenState, ClientState), `animation.rs` (camera/zoom/momentum/edge-pan animation, key repeat), `navigation.rs` (navigate_to_window, focus history, MRU cycle), `fullscreen.rs` (enter/exit fullscreen, pointer remap)
+- `config/` — `mod.rs` (Config struct, load/parse, lookup methods), `types.rs` (Action, Direction, Modifiers, KeyCombo, MouseBinding), `parse.rs` (string→type parsers for combos/actions), `defaults.rs` (default key/mouse bindings, terminal/launcher detection), `toml.rs` (serde structs, config path)
 - `canvas.rs` — coordinate transforms (ScreenPos/CanvasPos), camera math, cone search, zoom helpers (zoom_to_fit, zoom_anchor_camera, snap_zoom, dynamic_min_zoom)
 - `focus.rs` — FocusTarget(WlSurface) newtype with KeyboardTarget/PointerTarget/TouchTarget impls
-- `winit.rs` — winit backend init + render loop (~60fps timer), RescaleRenderElement zoom pipeline, cursor/shader/tile rendering
-- `input.rs` — keyboard/pointer handling, camera-offset pointer coords, scroll panning with momentum, zoom input, fullscreen guards, surface_under() hit-testing
+- `winit.rs` — winit backend init + render loop (~60fps timer), RescaleRenderElement zoom pipeline
+- `render.rs` — tile background, layer elements, cursor rendering helpers
+- `input/` — `mod.rs` (keyboard handling, pointer motion, surface_under hit-testing), `actions.rs` (execute_action dispatch for all keybindings), `pointer.rs` (button/axis handling, compositor resize/pan grabs)
 - `grabs/` — `move_grab.rs` (MoveSurfaceGrab), `resize_grab.rs` (ResizeSurfaceGrab, ResizeState), `pan_grab.rs` (PanGrab for viewport panning)
 - `handlers/` — `compositor.rs` (commit, resize repositioning, dmabuf, layer commit), `layer_shell.rs` (wlr-layer-shell handler), `xdg_shell.rs` (CSD move/resize, window centering, fullscreen, popup grabs), `mod.rs` (seat, data device, output, cursor_shape, foreign toplevel, 20 protocol delegates)
 - `protocols/` — `foreign_toplevel.rs` (zwlr-foreign-toplevel-management-v1, adapted from niri)
 
 Planned additions (from DESIGN.md):
 
-- `input/` — gesture state machine, mouse fallbacks (currently flat `input.rs`)
 - `window/` — decorations, z-order/stacking
 - `output.rs` — multi-monitor / viewport management
 
