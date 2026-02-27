@@ -2,6 +2,7 @@ mod focus;
 mod grabs;
 mod handlers;
 mod input;
+mod render;
 mod state;
 mod winit;
 
