@@ -380,7 +380,7 @@ impl DriftWm {
             .cloned()
             .collect();
 
-        for w in non_below.into_iter().rev() {
+        for w in non_below {
             self.space.raise_element(&w, false);
         }
 
