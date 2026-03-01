@@ -100,6 +100,32 @@ impl DriftWm {
                     if let Some(window) = window {
                         self.navigate_to_window(&window);
                     }
+                } else {
+                    // No focused window — find and focus the closest to viewport center
+                    let viewport = self.get_viewport_size();
+                    let center_x = self.camera.x + viewport.w as f64 / (2.0 * self.zoom);
+                    let center_y = self.camera.y + viewport.h as f64 / (2.0 * self.zoom);
+                    let closest = self
+                        .space
+                        .elements()
+                        .filter(|w| {
+                            !driftwm::config::applied_rule(w.toplevel().unwrap().wl_surface())
+                                .is_some_and(|r| r.widget || r.no_focus)
+                        })
+                        .min_by(|a, b| {
+                            let dist = |w: &smithay::desktop::Window| {
+                                let loc = self.space.element_location(w).unwrap_or_default();
+                                let size = w.geometry().size;
+                                let dx = loc.x as f64 + size.w as f64 / 2.0 - center_x;
+                                let dy = loc.y as f64 + size.h as f64 / 2.0 - center_y;
+                                dx * dx + dy * dy
+                            };
+                            dist(a).partial_cmp(&dist(b)).unwrap()
+                        })
+                        .cloned();
+                    if let Some(window) = closest {
+                        self.navigate_to_window(&window);
+                    }
                 }
             }
             Action::CenterNearest(dir) => {
