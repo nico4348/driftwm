@@ -383,6 +383,10 @@ impl DriftWm {
         for w in non_below.into_iter().rev() {
             self.space.raise_element(&w, false);
         }
+
+        if let Some(ref fs) = self.fullscreen {
+            self.space.raise_element(&fs.window, false);
+        }
     }
 
     /// Mark all active outputs as needing a redraw.
