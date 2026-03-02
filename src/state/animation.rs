@@ -6,7 +6,6 @@ use smithay::utils::{Logical, Point};
 use driftwm::canvas::{self, CanvasPos};
 use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 
-use crate::input::gestures::GestureState;
 use super::{DriftWm, FocusTarget};
 
 impl DriftWm {
@@ -92,26 +91,9 @@ impl DriftWm {
         self.camera += canvas_delta;
         self.update_output_from_camera();
 
-        // During gesture move, also reposition the window and adjust initial_location
-        // so the window stays under the finger as the viewport auto-pans.
-        let gesture_move_window = match &self.gesture_state {
-            Some(GestureState::Swipe3Move { window, .. }) => Some(window.clone()),
-            _ => None,
-        };
-        if let Some(ref window) = gesture_move_window
-            && let Some(loc) = self.space.element_location(window)
-        {
-            let new_loc = loc + Point::from((canvas_delta.x as i32, canvas_delta.y as i32));
-            self.space.map_element(window.clone(), new_loc, false);
-        }
-        if gesture_move_window.is_some()
-            && let Some(GestureState::Swipe3Move { initial_location, .. }) = &mut self.gesture_state
-        {
-            initial_location.x += canvas_delta.x;
-            initial_location.y += canvas_delta.y;
-        }
-
-        // Shift pointer canvas position so screen position stays fixed
+        // Shift pointer canvas position so screen position stays fixed.
+        // During gesture move, the active MoveSurfaceGrab on the pointer
+        // automatically repositions the window when it receives the motion.
         let pos = self.seat.get_pointer().unwrap().current_location();
         self.warp_pointer(pos + canvas_delta);
     }

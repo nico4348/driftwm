@@ -8,11 +8,11 @@ use smithay::{
     },
     desktop::Window,
     input::pointer::{
-        CursorImageStatus, GestureHoldBeginEvent as WlHoldBegin,
+        CursorImageStatus, Focus, GestureHoldBeginEvent as WlHoldBegin,
         GestureHoldEndEvent as WlHoldEnd, GesturePinchBeginEvent as WlPinchBegin,
         GesturePinchEndEvent as WlPinchEnd, GesturePinchUpdateEvent as WlPinchUpdate,
         GestureSwipeBeginEvent as WlSwipeBegin, GestureSwipeEndEvent as WlSwipeEnd,
-        GestureSwipeUpdateEvent as WlSwipeUpdate,
+        GestureSwipeUpdateEvent as WlSwipeUpdate, GrabStartData,
     },
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel,
     utils::{Logical, Point, Size, SERIAL_COUNTER},
@@ -29,13 +29,9 @@ use super::pointer::{edges_from_position, resize_cursor};
 pub enum GestureState {
     /// 3-finger swipe → pan viewport (with momentum via drift_pan).
     Swipe3Pan,
-    /// 3-finger double-tap+drag → move window
-    Swipe3Move {
-        window: Window,
-        initial_location: Point<f64, Logical>,
-        initial_screen_pos: Point<f64, Logical>,
-        cumulative_screen: Point<f64, Logical>,
-    },
+    /// 3-finger double-tap+drag → move window via MoveSurfaceGrab on the pointer.
+    /// Gesture updates just warp the cursor; the grab handles window positioning.
+    Swipe3Move,
     /// Mod+3-finger drag → resize window
     Swipe3Resize {
         window: Window,
@@ -156,38 +152,14 @@ impl DriftWm {
                 let pos = pointer.current_location();
                 self.warp_pointer(pos + canvas_delta);
             }
-            GestureState::Swipe3Move {
-                window,
-                initial_location,
-                initial_screen_pos,
-                cumulative_screen,
-            } => {
-                *cumulative_screen += Point::from((delta.x, delta.y));
-                let new_loc = Point::from((
-                    (initial_location.x + cumulative_screen.x / self.zoom) as i32,
-                    (initial_location.y + cumulative_screen.y / self.zoom) as i32,
-                ));
-                self.space.map_element(window.clone(), new_loc, false);
-
-                // Edge pan detection using virtual screen position
-                let virtual_screen = *initial_screen_pos + *cumulative_screen;
-                let output_size = self
-                    .space
-                    .outputs()
-                    .next()
-                    .and_then(|o| o.current_mode())
-                    .map(|m| m.size.to_logical(1));
-                if let Some(size) = output_size {
-                    let cfg = &self.config;
-                    self.edge_pan_velocity = MoveSurfaceGrab::edge_pan_velocity(
-                        virtual_screen,
-                        size.w as f64,
-                        size.h as f64,
-                        cfg.edge_zone,
-                        cfg.edge_pan_min,
-                        cfg.edge_pan_max,
-                    );
-                }
+            GestureState::Swipe3Move => {
+                // Just move the cursor — the MoveSurfaceGrab on the pointer
+                // handles window positioning and edge pan automatically.
+                let pointer = self.seat.get_pointer().unwrap();
+                let cursor_pos = pointer.current_location();
+                let canvas_delta: Point<f64, Logical> =
+                    (delta.x / self.zoom, delta.y / self.zoom).into();
+                self.warp_pointer(cursor_pos + canvas_delta);
             }
             GestureState::Swipe3Resize {
                 window,
@@ -258,8 +230,11 @@ impl DriftWm {
             GestureState::Swipe3Pan => {
                 // Momentum from drift_pan() carries the camera
             }
-            GestureState::Swipe3Move { .. } => {
-                self.edge_pan_velocity = None;
+            GestureState::Swipe3Move => {
+                let serial = SERIAL_COUNTER.next_serial();
+                let time = Event::time_msec(&event);
+                let pointer = self.seat.get_pointer().unwrap();
+                pointer.unset_grab(self, serial, time);
             }
             GestureState::Swipe3Resize {
                 window,
@@ -508,7 +483,9 @@ impl DriftWm {
 
     // ── Gesture setup helpers ─────────────────────────────────────────
 
-    /// Enter Swipe3Move state: focus + raise the window, set initial tracking state.
+    /// Enter Swipe3Move state: focus + raise the window, set a MoveSurfaceGrab
+    /// on the pointer so gesture updates just warp the cursor and the grab
+    /// handles window positioning (identical to Alt+click drag).
     /// If the window is pinned, falls through to Swipe3Pan instead.
     fn start_gesture_move(&mut self, window: Window, pos: Point<f64, Logical>) {
         if driftwm::config::applied_rule(window.toplevel().unwrap().wl_surface())
@@ -524,15 +501,20 @@ impl DriftWm {
         let surface = window.toplevel().unwrap().wl_surface().clone();
         keyboard.set_focus(self, Some(FocusTarget(surface)), serial);
 
-        let initial_location = self.space.element_location(&window).unwrap_or_default();
-        let screen_pos = canvas_to_screen(CanvasPos(pos), self.camera, self.zoom).0;
-
-        self.gesture_state = Some(GestureState::Swipe3Move {
+        let initial_window_location = self.space.element_location(&window).unwrap_or_default();
+        let pointer = self.seat.get_pointer().unwrap();
+        let grab = MoveSurfaceGrab {
+            start_data: GrabStartData {
+                focus: None,
+                button: 0, // no physical button — gesture-initiated
+                location: pos,
+            },
             window,
-            initial_location: Point::from((initial_location.x as f64, initial_location.y as f64)),
-            initial_screen_pos: screen_pos,
-            cumulative_screen: Point::from((0.0, 0.0)),
-        });
+            initial_window_location,
+        };
+        pointer.set_grab(self, grab, serial, Focus::Clear);
+
+        self.gesture_state = Some(GestureState::Swipe3Move);
     }
 
     /// Enter Swipe3Resize state: store initial geometry, set resize state + cursor.
