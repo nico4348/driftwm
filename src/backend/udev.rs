@@ -662,6 +662,10 @@ fn render_frame(
     let renderer = backend.renderer();
     let elements = crate::render::compose_frame(&mut data.state, renderer, output, cursor_elements);
 
+    // Fulfill pending screencopy requests
+    let renderer = backend.renderer();
+    crate::render::render_screencopy(&mut data.state, renderer, output, &elements);
+
     // Render via DRM compositor
     let renderer = backend.renderer();
     match compositor.render_frame::<_, OutputRenderElements>(

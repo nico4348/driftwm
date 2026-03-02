@@ -100,17 +100,7 @@ for the full list of defaults, mouse bindings, and settings.
 
 Config file: `~/.config/driftwm/config.toml` (respects `XDG_CONFIG_HOME`).
 
-Copy the example, uncomment what you want to changeIn compose_frame(), change the render order so canvas layer elements go between
-  zoomed windows and widget windows (the widget = true xdg windows that
-  enforce_below_windows pushes down), instead of below all windows:
-
-  cursor > overlay > top > normal_windows > canvas_layers > widget_windows > bottom >
-   bg
-
-  This means splitting zoomed_windows into normal vs widget windows, or inserting
-  canvas layer elements at the right point. The result: waybar + tooltips render
-  above the no_focus terminal widgets, below regular app windows. No popup extraction
-   needed.:
+Copy the example, uncomment what you want to change:
 
 ```bash
 mkdir -p ~/.config/driftwm
@@ -132,10 +122,11 @@ only specify what you want to change. Use `"none"` to unbind a default binding.
 8. **Config file** — TOML parsing, user keybindings/mouse bindings/settings _(done)_
 9. **udev backend** — DRM/KMS, libinput, libseat session management _(done)_
 10. **Trackpad gestures** — gesture state machine, libinput device config _(done)_
-11. Multi-monitor — multiple viewports on same canvas
+11. **Window rules** — app_id matching, widget mode, state file, xdg-decoration _(done)_
 12. Decorations — SSD fallback, resize grab zones
 13. XWayland — X11 app support
-14. Widgets + polish
+14. Screenshot/screencast — wlr-screencopy, screen capture
+15. Multi-monitor — multiple viewports on same canvas
 
 ## License
 

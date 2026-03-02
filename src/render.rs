@@ -465,6 +465,134 @@ pub fn init_background(state: &mut crate::state::DriftWm, renderer: &mut GlesRen
     ));
 }
 
+/// Fulfill pending screencopy requests by rendering to offscreen textures.
+pub fn render_screencopy(
+    state: &mut crate::state::DriftWm,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    elements: &[OutputRenderElements],
+) {
+    use smithay::backend::renderer::ExportMem;
+    use smithay::wayland::shm;
+    use driftwm::protocols::screencopy::ScreencopyBuffer;
+    use std::ptr;
+
+    // Extract only requests for this output, keep the rest
+    let mut pending = Vec::new();
+    let mut i = 0;
+    while i < state.pending_screencopies.len() {
+        if state.pending_screencopies[i].output() == output {
+            pending.push(state.pending_screencopies.swap_remove(i));
+        } else {
+            i += 1;
+        }
+    }
+
+    if pending.is_empty() {
+        return;
+    }
+
+    let output_scale = output.current_scale().fractional_scale();
+    let scale = Scale::from(output_scale);
+    let transform = output.current_transform();
+    let timestamp = state.start_time.elapsed();
+
+    for screencopy in pending {
+        let size = screencopy.buffer_size();
+        let use_elements: Vec<&OutputRenderElements> = if screencopy.overlay_cursor() {
+            elements.iter().collect()
+        } else {
+            elements
+                .iter()
+                .filter(|e| !matches!(e, OutputRenderElements::Cursor(_)))
+                .collect()
+        };
+
+        let result = render_to_offscreen(renderer, size, scale, transform, &use_elements);
+
+        match result {
+            Ok(mapping) => {
+                let ScreencopyBuffer::Shm(wl_buffer) = screencopy.buffer();
+                let copy_ok =
+                    shm::with_buffer_contents_mut(wl_buffer, |shm_buf, shm_len, _data| {
+                        let bytes = match renderer.map_texture(&mapping) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                tracing::warn!("screencopy: map_texture failed: {e:?}");
+                                return false;
+                            }
+                        };
+                        let copy_len = shm_len.min(bytes.len());
+                        unsafe {
+                            ptr::copy_nonoverlapping(bytes.as_ptr(), shm_buf.cast(), copy_len);
+                        }
+                        true
+                    });
+
+                match copy_ok {
+                    Ok(true) => {
+                        screencopy.submit(false, timestamp);
+                    }
+                    _ => {
+                        tracing::warn!("screencopy: SHM buffer copy failed");
+                        // screencopy drops here → sends failed()
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("screencopy: offscreen render failed: {e:?}");
+                // screencopy drops here → sends failed()
+            }
+        }
+    }
+}
+
+/// Render elements to an offscreen texture and download the pixels.
+fn render_to_offscreen(
+    renderer: &mut GlesRenderer,
+    size: smithay::utils::Size<i32, Physical>,
+    scale: Scale<f64>,
+    transform: Transform,
+    elements: &[&OutputRenderElements],
+) -> Result<smithay::backend::renderer::gles::GlesMapping, Box<dyn std::error::Error>> {
+    use smithay::backend::renderer::{Bind, Color32F, ExportMem, Frame, Offscreen, Renderer};
+    use smithay::backend::renderer::element::{Element, RenderElement};
+    use smithay::backend::renderer::gles::GlesTexture;
+
+    let buffer_size = size.to_logical(1).to_buffer(1, Transform::Normal);
+
+    let mut texture: GlesTexture = Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Xrgb8888, buffer_size)?;
+
+    let _sync_point = {
+        let mut target = renderer.bind(&mut texture)?;
+
+        let inverted_transform = transform.invert();
+        let output_rect = Rectangle::from_size(inverted_transform.transform_size(size));
+
+        let mut frame = renderer.render(&mut target, size, transform)?;
+
+        frame.clear(Color32F::from([0.0f32, 0.0, 0.0, 1.0]), &[output_rect])?;
+
+        for element in elements.iter().rev() {
+            let src = element.src();
+            let dst = element.geometry(scale);
+
+            if let Some(mut damage) = output_rect.intersection(dst) {
+                damage.loc -= dst.loc;
+                element.draw(&mut frame, src, dst, &[damage], &[])?;
+            }
+        }
+
+        frame.finish()?
+    };
+
+    // Re-bind texture to copy pixels
+    let target = renderer.bind(&mut texture)?;
+    let mapping = renderer.copy_framebuffer(&target, Rectangle::from_size(buffer_size), Fourcc::Xrgb8888)?;
+
+    Ok(mapping)
+}
+
 /// Post-render: frame callbacks, foreign toplevel refresh, space cleanup.
 pub fn post_render(state: &mut crate::state::DriftWm, output: &Output) {
     // Foreign toplevel refresh

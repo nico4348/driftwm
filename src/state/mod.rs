@@ -202,6 +202,8 @@ pub struct DriftWm {
     pub decoration_state: XdgDecorationState,
     pub layer_shell_state: WlrLayerShellState,
     pub foreign_toplevel_state: driftwm::protocols::foreign_toplevel::ForeignToplevelManagerState,
+    pub screencopy_state: driftwm::protocols::screencopy::ScreencopyManagerState,
+    pub pending_screencopies: Vec<driftwm::protocols::screencopy::Screencopy>,
 
     /// True when pointer focus is a layer surface (screen-fixed, not canvas-relative).
     /// Guards synthetic pointer adjustments in camera/zoom animations.
@@ -313,6 +315,8 @@ impl DriftWm {
         let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let foreign_toplevel_state =
             driftwm::protocols::foreign_toplevel::ForeignToplevelManagerState::new::<Self, _>(&dh, |_| true);
+        let screencopy_state =
+            driftwm::protocols::screencopy::ScreencopyManagerState::new::<Self, _>(&dh, |_| true);
 
         let config = Config::load();
 
@@ -377,6 +381,8 @@ impl DriftWm {
             decoration_state,
             layer_shell_state,
             foreign_toplevel_state,
+            screencopy_state,
+            pending_screencopies: Vec::new(),
             pointer_over_layer: false,
             canvas_layers: Vec::new(),
             config,

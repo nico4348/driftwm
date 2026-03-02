@@ -167,6 +167,7 @@ pub fn init_winit(
                 Ok((renderer, mut framebuffer)) => {
                     let all_elements =
                         crate::render::compose_frame(&mut data.state, renderer, &output, cursor_elements);
+                    crate::render::render_screencopy(&mut data.state, renderer, &output, &all_elements);
                     let result = damage_tracker.render_output(
                         renderer,
                         &mut framebuffer,

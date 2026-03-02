@@ -313,3 +313,17 @@ impl ForeignToplevelHandler for DriftWm {
 }
 
 driftwm::delegate_foreign_toplevel!(DriftWm);
+
+use driftwm::protocols::screencopy::{ScreencopyHandler, ScreencopyManagerState, Screencopy};
+
+impl ScreencopyHandler for DriftWm {
+    fn frame(&mut self, screencopy: Screencopy) {
+        self.pending_screencopies.push(screencopy);
+    }
+
+    fn screencopy_state(&mut self) -> &mut ScreencopyManagerState {
+        &mut self.screencopy_state
+    }
+}
+
+driftwm::delegate_screencopy!(DriftWm);

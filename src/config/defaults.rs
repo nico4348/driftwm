@@ -227,7 +227,7 @@ pub(super) fn default_bindings(mod_key: ModKey, cycle_mod: CycleModifier) -> Has
         // Screenshot
         (
             KeyCombo { modifiers: Modifiers::EMPTY, sym: Keysym::from(keysyms::KEY_Print) },
-            Action::Exec("grim".into()),
+            Action::Exec("grim - | wl-copy".into()),
         ),
         // Lock screen
         (

@@ -11,11 +11,15 @@
 # Commands to run at startup (after WAYLAND_DISPLAY is set).
 # Each entry is passed to sh -c, so full shell syntax works (pipes, &&, env vars).
 # autostart = [
+#     # Portal support (file dialogs, open-with from file managers, etc.)
+#     # Requires: xdg-desktop-portal, xdg-desktop-portal-gtk, and
+#     # ~/.config/xdg-desktop-portal/portals.conf with: [preferred]\n# default=gtk
+#     "dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start xdg-desktop-portal-gtk.service xdg-desktop-portal.service",
 #     "swayosd-server --top-margin 0.95",
 #     "blueman-applet",
 #     "swaync",
 #     "waybar -c ~/path/to/driftwm/config/waybar/taskbar.jsonc -s ~/path/to/driftwm/config/waybar/taskbar.css",
-#     "waybar -c ~/path/to/driftwm/config/waybar/tray.jsonc -s ~/path/to/driftwm/config/waybar/tray.css",
+#     "sleep 1 && waybar -c ~/path/to/driftwm/config/waybar/tray.jsonc -s ~/path/to/driftwm/config/waybar/tray.css",
 #     "vorta -d",
 #     "~/path/to/driftwm/widgets/launch.sh",
 #     "~/path/to/driftwm/widgets/battery_notify.sh",
@@ -123,7 +127,7 @@
 # "XF86AudioMute" = "exec wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
 # "XF86MonBrightnessUp" = "exec brightnessctl set +5%"
 # "XF86MonBrightnessDown" = "exec brightnessctl set 5%-"
-# "Print" = "exec grim"
+# "Print" = "exec grim - | wl-copy"
 # "mod+l" = "exec swaylock"
 #
 # For visual OSD popups, install swayosd and replace wpctl/brightnessctl:
