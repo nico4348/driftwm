@@ -10,20 +10,7 @@
 
 # Commands to run at startup (after WAYLAND_DISPLAY is set).
 # Each entry is passed to sh -c, so full shell syntax works (pipes, &&, env vars).
-# autostart = [
-#     # Portal support (file dialogs, open-with from file managers, etc.)
-#     # Requires: xdg-desktop-portal, xdg-desktop-portal-gtk, and
-#     # ~/.config/xdg-desktop-portal/portals.conf with: [preferred]\n# default=gtk
-#     "dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start xdg-desktop-portal-gtk.service xdg-desktop-portal.service",
-#     "swayosd-server --top-margin 0.95",
-#     "blueman-applet",
-#     "swaync",
-#     "waybar -c ~/path/to/driftwm/config/waybar/taskbar.jsonc -s ~/path/to/driftwm/config/waybar/taskbar.css",
-#     "sleep 1 && waybar -c ~/path/to/driftwm/config/waybar/tray.jsonc -s ~/path/to/driftwm/config/waybar/tray.css",
-#     "vorta -d",
-#     "~/path/to/driftwm/widgets/launch.sh",
-#     "~/path/to/driftwm/widgets/battery_notify.sh",
-# ]
+# autostart = []
 
 [input.keyboard]
 # layout = "us"              # XKB layout (e.g., "us,ru" for multi-layout)
@@ -105,9 +92,8 @@
 # Directions: up, down, left, right, up-left, up-right, down-left, down-right
 
 [keybindings]
-# "mod+return" = "exec ptyxis -s"
-# "mod+d" = "exec fuzzel"
-# "mod+n" = "exec swaync-client -t"
+# "mod+return" = "exec <detected terminal>"
+# "mod+d" = "exec <detected launcher>"
 # "mod+q" = "close-window"
 # "mod+f" = "toggle-fullscreen"
 # "mod+c" = "center-window"
@@ -131,27 +117,18 @@
 # "mod+0" = "zoom-reset"
 # "mod+z" = "zoom-reset"
 # "mod+w" = "zoom-to-fit"
-# "mod+1" = "go-to -3000 3000"     # top-left corner bookmark
-# "mod+2" = "go-to 3000 3000"      # top-right corner bookmark
-# "mod+3" = "go-to -3000 -3000"    # bottom-left corner bookmark
-# "mod+4" = "go-to 3000 -3000"     # bottom-right corner bookmark
+# "mod+1" = "go-to -3000 3000"
+# "mod+2" = "go-to 3000 3000"
+# "mod+3" = "go-to -3000 -3000"
+# "mod+4" = "go-to 3000 -3000"
+# "mod+l" = "exec swaylock"
 # "mod+ctrl+shift+q" = "quit"
-#
-# Media keys (default: wpctl/brightnessctl, no modifier needed)
 # "XF86AudioRaiseVolume" = "exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+"
 # "XF86AudioLowerVolume" = "exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"
 # "XF86AudioMute" = "exec wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
 # "XF86MonBrightnessUp" = "exec brightnessctl set +5%"
 # "XF86MonBrightnessDown" = "exec brightnessctl set 5%-"
 # "Print" = "exec grim - | wl-copy"
-# "mod+l" = "exec swaylock"
-#
-# For visual OSD popups, install swayosd and replace wpctl/brightnessctl:
-# "XF86AudioRaiseVolume" = "exec swayosd-client --output-volume raise"
-# "XF86AudioLowerVolume" = "exec swayosd-client --output-volume lower"
-# "XF86AudioMute" = "exec swayosd-client --output-volume mute-toggle"
-# "XF86MonBrightnessUp" = "exec swayosd-client --brightness raise"
-# "XF86MonBrightnessDown" = "exec swayosd-client --brightness lower"
 
 # Mouse bindings: "Modifier+...+Trigger" = "action"
 # Only modifier-based bindings — canvas fundamentals are hardcoded:
@@ -179,69 +156,10 @@
 #   widget     — true: pinned (immovable), below normal windows, excluded from navigation (default: false)
 #   no_focus   — true: completely inert to input — clicks/scrolls pass through (default: false)
 #   decoration — "client" (default), "server", or "none" (borderless)
-
-# Dashboard widgets — Alacritty terminals launched by widgets/launch.sh.
-# Each widget gets a unique app_id for positioning. Positions are canvas
-# coordinates centered around origin (visible at home view on 1920x1080).
-# Waybar configs are in config/waybar/.
-
+#
 # [[window_rules]]
-# app_id = "drift-clock"
-# position = [-93, 205]
+# app_id = "my-widget"
+# position = [0, 0]
 # widget = true
 # no_focus = true
-# decoration = "none"
-#
-# [[window_rules]]
-# app_id = "drift-stats"
-# position = [-93, 0]
-# widget = true
-# no_focus = false
-# decoration = "none"
-#
-# [[window_rules]]
-# app_id = "drift-canvas"
-# position = [-129, -185]
-# widget = true
-# no_focus = true
-# decoration = "none"
-#
-# [[window_rules]]
-# app_id = "drift-layout"
-# position = [42, -185]
-# widget = true
-# no_focus = true
-# decoration = "none"
-#
-# [[window_rules]]
-# app_id = "drift-calendar"
-# position = [186, 0]
-# widget = true
-# no_focus = true
-# decoration = "none"
-#
-# [[window_rules]]
-# app_id = "drift-weather"
-# position = [186, 205]
-# widget = true
-# no_focus = true
-# decoration = "none"
-#
-# [[window_rules]]
-# app_id = "drift-notif"
-# position = [190, -185]
-# widget = true
-# no_focus = false
-# decoration = "none"
-#
-# [[window_rules]]
-# app_id = "waybar"
-# position = [-289, 21]
-# widget = true
-# decoration = "none"
-#
-# [[window_rules]]
-# app_id = "waybar"
-# position = [150, -260]
-# widget = true
 # decoration = "none"

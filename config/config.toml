@@ -1,0 +1,104 @@
+# driftwm — personal config (symlink to ~/.config/driftwm/config.toml)
+
+autostart = [
+    "gnome-keyring-daemon --start --components=secrets,pkcs11,ssh",
+    "dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start xdg-desktop-portal-gtk.service xdg-desktop-portal.service",
+    "/usr/libexec/polkit-gnome-authentication-agent-1",
+    "swayosd-server --top-margin 0.95",
+    "blueman-applet",
+    "swaync",
+    "waybar",
+    "sleep 1 && waybar -c ~/.config/waybar/tray-config.jsonc -s ~/.config/waybar/tray-style.css",
+    "vorta -d",
+    "~/Documents/work/scripts/driftwm/widgets/launch.sh",
+    "~/Documents/work/scripts/driftwm/widgets/battery_notify.sh",
+]
+
+[input.keyboard]
+layout = "us,ru"
+options = "grp:win_space_toggle"
+
+[cursor]
+theme = "elementary"
+
+[decorations]
+bg_color = "#FDF6E3"
+fg_color = "#5C6A72"
+
+[background]
+shader_path = "~/.config/driftwm/pink_cloud.glsl"
+
+[keybindings]
+"mod+return" = "exec ptyxis -s"
+"mod+d" = "exec fuzzel"
+"mod+n" = "exec swaync-client -t"
+"mod+l" = "exec swaylock -f -c 000000 -kl"
+# swayosd instead of default wpctl/brightnessctl
+"XF86AudioRaiseVolume" = "exec swayosd-client --output-volume raise"
+"XF86AudioLowerVolume" = "exec swayosd-client --output-volume lower"
+"XF86AudioMute" = "exec swayosd-client --output-volume mute-toggle"
+"XF86MonBrightnessUp" = "exec swayosd-client --brightness raise"
+"XF86MonBrightnessDown" = "exec swayosd-client --brightness lower"
+
+# Dashboard widgets — positioned around origin for home view (1920x1080)
+
+[[window_rules]]
+app_id = "drift-clock"
+position = [-93, 205]
+widget = true
+no_focus = true
+decoration = "none"
+
+[[window_rules]]
+app_id = "drift-stats"
+position = [-93, 0]
+widget = true
+no_focus = false
+decoration = "none"
+
+[[window_rules]]
+app_id = "drift-canvas"
+position = [-129, -185]
+widget = true
+no_focus = true
+decoration = "none"
+
+[[window_rules]]
+app_id = "drift-layout"
+position = [42, -185]
+widget = true
+no_focus = true
+decoration = "none"
+
+[[window_rules]]
+app_id = "drift-calendar"
+position = [186, 0]
+widget = true
+no_focus = true
+decoration = "none"
+
+[[window_rules]]
+app_id = "drift-weather"
+position = [186, 205]
+widget = true
+no_focus = true
+decoration = "none"
+
+[[window_rules]]
+app_id = "drift-notif"
+position = [190, -185]
+widget = true
+no_focus = false
+decoration = "none"
+
+[[window_rules]]
+app_id = "waybar"
+position = [-289, 21]
+widget = true
+decoration = "none"
+
+[[window_rules]]
+app_id = "waybar"
+position = [150, -260]
+widget = true
+decoration = "none"
