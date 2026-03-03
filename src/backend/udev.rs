@@ -639,8 +639,8 @@ fn render_frame(
     data.state.apply_key_repeat();
     data.state.apply_scroll_momentum();
     data.state.apply_edge_pan();
-    data.state.apply_camera_animation(dt);
     data.state.apply_zoom_animation(dt);
+    data.state.apply_camera_animation(dt);
     data.state.check_exec_cursor_timeout();
 
     // Keep rendering while animations are in progress

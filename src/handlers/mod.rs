@@ -405,6 +405,7 @@ impl SessionLockHandler for DriftWm {
         self.grab_cursor = false;
         self.camera_target = None;
         self.zoom_target = None;
+        self.zoom_animation_center = None;
         if let Some(pending) = self.pending_middle_click.take() {
             self.loop_handle.remove(pending.timer_token);
         }

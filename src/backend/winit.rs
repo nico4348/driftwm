@@ -143,11 +143,11 @@ pub fn init_winit(
             // --- Edge auto-pan (window drag near viewport edges) ---
             data.state.apply_edge_pan();
 
+            // --- Zoom animation (before camera so recomputed target is used) ---
+            data.state.apply_zoom_animation(dt);
+
             // --- Camera animation (window navigation) ---
             data.state.apply_camera_animation(dt);
-
-            // --- Zoom animation ---
-            data.state.apply_zoom_animation(dt);
 
             // --- Exec loading cursor timeout ---
             data.state.check_exec_cursor_timeout();

@@ -1,6 +1,7 @@
 use smithay::{
     desktop::Window,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
+    utils::Point,
 };
 
 use super::{DriftWm, FocusTarget};
@@ -33,7 +34,12 @@ impl DriftWm {
             window_loc, window_size, viewport_size, target_zoom,
         );
 
+        let window_center = Point::from((
+            window_loc.x as f64 + window_size.w as f64 / 2.0,
+            window_loc.y as f64 + window_size.h as f64 / 2.0,
+        ));
         self.momentum.stop();
+        self.zoom_animation_center = Some(window_center);
         self.camera_target = Some(target);
         self.zoom_target = Some(target_zoom);
     }

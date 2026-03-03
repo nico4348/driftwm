@@ -34,6 +34,7 @@ impl DriftWm {
         // Lock viewport: stop all animations and momentum
         self.zoom = 1.0;
         self.zoom_target = None;
+        self.zoom_animation_center = None;
         self.camera_target = None;
         self.momentum.stop();
         self.overview_return = None;

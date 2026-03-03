@@ -590,6 +590,7 @@ impl DriftWm {
     fn cancel_animations(&mut self) {
         self.camera_target = None;
         self.zoom_target = None;
+        self.zoom_animation_center = None;
         self.momentum.stop();
     }
 

@@ -103,6 +103,7 @@ impl DriftWm {
     pub fn drift_pan(&mut self, delta: Point<f64, Logical>) {
         self.camera_target = None; // Cancel animation on manual input
         self.zoom_target = None;
+        self.zoom_animation_center = None;
         self.overview_return = None;
         self.momentum.accumulate(delta, self.frame_counter);
         self.camera += delta;
@@ -166,13 +167,16 @@ impl DriftWm {
     }
 
     /// Advance zoom animation toward `zoom_target` using frame-rate independent lerp.
-    /// Adjusts pointer canvas position so the cursor stays at the same screen position.
+    /// When `zoom_animation_center` is set (combined zoom+camera animation), lerps
+    /// the on-screen center directly and derives camera, preventing lateral drift.
+    /// Otherwise just adjusts pointer so cursor stays at the same screen position.
     pub fn apply_zoom_animation(&mut self, dt: Duration) {
         let Some(target) = self.zoom_target else {
             return;
         };
 
         let old_zoom = self.zoom;
+        let old_camera = self.camera;
 
         let base = self.config.animation_speed;
         let reference_dt = 1.0 / 60.0;
@@ -187,9 +191,48 @@ impl DriftWm {
             self.zoom += dz * factor;
         }
 
-        // Adjust pointer so cursor stays at the same screen position.
-        // screen = (canvas - camera) * zoom  ⟹  new_canvas = screen / new_zoom + camera
-        if self.zoom != old_zoom {
+        if let Some(target_center) = self.zoom_animation_center {
+            // Combined zoom+camera: lerp the on-screen center, derive camera.
+            // camera = center - vp/(2*zoom) is nonlinear in zoom, so lerping
+            // center (not camera) keeps the view moving in a straight line.
+            let vp = self.get_viewport_size();
+            let current_center: Point<f64, Logical> = Point::from((
+                old_camera.x + vp.w as f64 / (2.0 * old_zoom),
+                old_camera.y + vp.h as f64 / (2.0 * old_zoom),
+            ));
+            let cx = current_center.x + (target_center.x - current_center.x) * factor;
+            let cy = current_center.y + (target_center.y - current_center.y) * factor;
+
+            self.camera = Point::from((
+                cx - vp.w as f64 / (2.0 * self.zoom),
+                cy - vp.h as f64 / (2.0 * self.zoom),
+            ));
+            self.update_output_from_camera();
+
+            // Suppress camera_animation — we set camera directly
+            self.camera_target = None;
+
+            if self.zoom_target.is_none() {
+                // Zoom snapped — hand off final convergence to camera_animation
+                let final_camera = Point::from((
+                    target_center.x - vp.w as f64 / (2.0 * self.zoom),
+                    target_center.y - vp.h as f64 / (2.0 * self.zoom),
+                ));
+                self.zoom_animation_center = None;
+                self.camera_target = Some(final_camera);
+            }
+
+            // Warp pointer: compensate for both camera and zoom change
+            let pos = self.seat.get_pointer().unwrap().current_location();
+            let screen_x = (pos.x - old_camera.x) * old_zoom;
+            let screen_y = (pos.y - old_camera.y) * old_zoom;
+            let new_pos = Point::from((
+                screen_x / self.zoom + self.camera.x,
+                screen_y / self.zoom + self.camera.y,
+            ));
+            self.warp_pointer(new_pos);
+        } else if self.zoom != old_zoom {
+            // Standalone zoom: just compensate pointer for zoom change
             let pos = self.seat.get_pointer().unwrap().current_location();
             let screen_x = (pos.x - self.camera.x) * old_zoom;
             let screen_y = (pos.y - self.camera.y) * old_zoom;

@@ -171,6 +171,10 @@ pub struct DriftWm {
     pub zoom: f64,
     /// Zoom animation target. When Some, zoom lerps toward this value each frame.
     pub zoom_target: Option<f64>,
+    /// Desired canvas center during combined camera+zoom animations.
+    /// When set, `camera_target` is recomputed each frame from this center
+    /// and the current (interpolating) zoom, preventing lateral drift.
+    pub zoom_animation_center: Option<Point<f64, Logical>>,
     /// Last rendered zoom — for shader/damage change detection.
     pub last_rendered_zoom: f64,
     /// Saved (camera, zoom) for ZoomToFit toggle-back.
@@ -405,6 +409,7 @@ impl DriftWm {
             camera: Point::from((0.0, 0.0)),
             zoom: 1.0,
             zoom_target: None,
+            zoom_animation_center: None,
             last_rendered_zoom: f64::NAN,
             overview_return: None,
             last_scroll_pan: None,

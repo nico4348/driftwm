@@ -438,6 +438,7 @@ impl DriftWm {
                     self.camera = canvas::zoom_anchor_camera(pos, screen_pos, new_zoom);
                     self.zoom = new_zoom;
                     self.zoom_target = None;
+                    self.zoom_animation_center = None;
                     self.camera_target = None;
                     self.momentum.stop();
                     self.update_output_from_camera();
@@ -518,6 +519,7 @@ impl DriftWm {
                         self.camera = canvas::zoom_anchor_camera(pos, screen_pos, new_zoom);
                         self.zoom = new_zoom;
                         self.zoom_target = None;
+                        self.zoom_animation_center = None;
                         self.camera_target = None;
                         self.momentum.stop();
                         self.update_output_from_camera();
