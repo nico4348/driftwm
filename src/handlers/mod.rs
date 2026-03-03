@@ -152,11 +152,23 @@ impl XdgActivationHandler for DriftWm {
     fn request_activation(
         &mut self,
         _token: XdgActivationToken,
-        _token_data: XdgActivationTokenData,
+        token_data: XdgActivationTokenData,
         surface: WlSurface,
     ) {
-        // Simple focus-and-raise: find window by surface, raise it, set keyboard focus.
-        // Skip no_focus windows — they should never receive focus.
+        // Only honor if the requesting surface currently has keyboard focus.
+        // This allows legitimate cross-app activation (e.g. swaync clicking a
+        // notification from a focused panel) but blocks background apps from
+        // stealing focus.
+        let dominated = token_data.surface.as_ref().is_some_and(|requester| {
+            self.seat
+                .get_keyboard()
+                .unwrap()
+                .current_focus()
+                .is_some_and(|focus| &focus.0 == requester)
+        });
+        if !dominated {
+            return;
+        }
         if driftwm::config::applied_rule(&surface).is_some_and(|r| r.no_focus) {
             return;
         }
@@ -166,11 +178,24 @@ impl XdgActivationHandler for DriftWm {
             .find(|w| w.toplevel().unwrap().wl_surface() == &surface)
             .cloned();
         if let Some(window) = window {
-            self.space.raise_element(&window, true);
-            self.enforce_below_windows();
-            let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-            let keyboard = self.seat.get_keyboard().unwrap();
-            keyboard.set_focus(self, Some(FocusTarget(surface)), serial);
+            let mostly_visible = self.space.element_location(&window).is_some_and(|loc| {
+                driftwm::canvas::visible_fraction(
+                    loc,
+                    window.geometry().size,
+                    self.camera,
+                    self.get_viewport_size(),
+                    self.zoom,
+                ) >= 0.5
+            });
+            if mostly_visible {
+                self.space.raise_element(&window, true);
+                self.enforce_below_windows();
+                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                let keyboard = self.seat.get_keyboard().unwrap();
+                keyboard.set_focus(self, Some(FocusTarget(surface)), serial);
+            } else {
+                self.navigate_to_window(&window, false);
+            }
         }
     }
 }
