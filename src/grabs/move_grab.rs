@@ -37,36 +37,47 @@ pub struct MoveSurfaceGrab {
     pub snap: SnapState,
 }
 
-/// Find the best snap candidate along one axis.
-///
-/// Checks 2 edge pairs per other window (adjacent edges). Distance is measured
-/// edge-to-edge (without gap offset), so snapping triggers whether approaching
-/// from outside or leaving an overlap.
+struct SnapRect {
+    x_low: f64,
+    x_high: f64,
+    y_low: f64,
+    y_high: f64,
+}
+
+/// Find the best snap candidate along one axis, filtering out windows that
+/// don't overlap on the perpendicular axis (within `threshold` tolerance).
 ///
 /// Returns `Some((snapped_origin, abs_distance))` for the closest candidate
 /// within `threshold`, or `None`.
-fn find_snap_candidate(
-    natural_edge_low: f64,
-    extent: f64,
-    others: &[(f64, f64)],
-    gap: f64,
-    threshold: f64,
-) -> Option<(f64, f64)> {
-    let natural_edge_high = natural_edge_low + extent;
+fn find_snap_candidate(natural_edge_low: f64, p: &SnapParams<'_>) -> Option<(f64, f64)> {
+    let natural_edge_high = natural_edge_low + p.extent;
     let mut best: Option<(f64, f64)> = None;
 
-    for &(other_low, other_high) in others {
+    for other in p.others {
+        let (other_low, other_high, other_perp_low, other_perp_high) = if p.horizontal {
+            (other.x_low, other.x_high, other.y_low, other.y_high)
+        } else {
+            (other.y_low, other.y_high, other.x_low, other.x_high)
+        };
+
+        // Skip windows with no perpendicular overlap (tolerance = threshold)
+        if p.perp_high + p.threshold <= other_perp_low
+            || other_perp_high + p.threshold <= p.perp_low
+        {
+            continue;
+        }
+
         // dragged right edge → other left edge
-        let snap_origin = other_low - gap - extent;
+        let snap_origin = other_low - p.gap - p.extent;
         let dist = (natural_edge_high - other_low).abs();
-        if dist < threshold && best.is_none_or(|(_, bd)| dist < bd) {
+        if dist < p.threshold && best.is_none_or(|(_, bd)| dist < bd) {
             best = Some((snap_origin, dist));
         }
 
         // dragged left edge → other right edge
-        let snap_origin = other_high + gap;
+        let snap_origin = other_high + p.gap;
         let dist = (natural_edge_low - other_high).abs();
-        if dist < threshold && best.is_none_or(|(_, bd)| dist < bd) {
+        if dist < p.threshold && best.is_none_or(|(_, bd)| dist < bd) {
             best = Some((snap_origin, dist));
         }
     }
@@ -140,7 +151,7 @@ impl PointerGrab<DriftWm> for MoveSurfaceGrab {
             let effective_break = data.config.snap_break_force / zoom;
             let gap = data.config.snap_gap;
 
-            // Collect other windows' edges (exclude self and widgets)
+            // Collect other windows' snap rects (exclude self and widgets)
             let self_surface = self.window.toplevel().unwrap().wl_surface().clone();
             let window_size = self.window.geometry().size;
             let self_bar = if data.decorations.contains_key(&self_surface.id()) {
@@ -151,8 +162,7 @@ impl PointerGrab<DriftWm> for MoveSurfaceGrab {
             let extent_x = window_size.w as f64;
             let extent_y = window_size.h as f64 + self_bar as f64;
 
-            let mut others_x: Vec<(f64, f64)> = Vec::new();
-            let mut others_y: Vec<(f64, f64)> = Vec::new();
+            let mut others: Vec<SnapRect> = Vec::new();
             for w in data.space.elements() {
                 let surface = w.toplevel().unwrap().wl_surface();
                 if *surface == self_surface {
@@ -163,19 +173,28 @@ impl PointerGrab<DriftWm> for MoveSurfaceGrab {
                 }
                 let Some(loc) = data.space.element_location(w) else { continue };
                 let size = w.geometry().size;
-                // For SSD windows, include the title bar in the snap boundary
                 let bar = if data.decorations.contains_key(&surface.id()) {
                     config::DecorationConfig::TITLE_BAR_HEIGHT
                 } else {
                     0
                 };
-                others_x.push((loc.x as f64, loc.x as f64 + size.w as f64));
-                others_y.push((loc.y as f64 - bar as f64, loc.y as f64 + size.h as f64));
+                others.push(SnapRect {
+                    x_low: loc.x as f64,
+                    x_high: loc.x as f64 + size.w as f64,
+                    y_low: loc.y as f64 - bar as f64,
+                    y_high: loc.y as f64 + size.h as f64,
+                });
             }
+
+            // Use natural (un-snapped) positions for perpendicular ranges
+            let visual_y = natural_y - self_bar as f64;
 
             let params_x = SnapParams {
                 extent: extent_x,
-                others: &others_x,
+                perp_low: visual_y,
+                perp_high: visual_y + extent_y,
+                horizontal: true,
+                others: &others,
                 gap,
                 threshold: effective_distance,
                 break_force: effective_break,
@@ -186,10 +205,12 @@ impl PointerGrab<DriftWm> for MoveSurfaceGrab {
 
             // Shift y into visual space (title bar top) for snapping,
             // then convert back to geometry origin.
-            let visual_y = natural_y - self_bar as f64;
             let params_y = SnapParams {
                 extent: extent_y,
-                others: &others_y,
+                perp_low: natural_x,
+                perp_high: natural_x + extent_x,
+                horizontal: false,
+                others: &others,
                 gap,
                 threshold: effective_distance,
                 break_force: effective_break,
@@ -247,7 +268,10 @@ impl PointerGrab<DriftWm> for MoveSurfaceGrab {
 
 struct SnapParams<'a> {
     extent: f64,
-    others: &'a [(f64, f64)],
+    perp_low: f64,
+    perp_high: f64,
+    horizontal: bool,
+    others: &'a [SnapRect],
     gap: f64,
     threshold: f64,
     break_force: f64,
@@ -285,8 +309,7 @@ impl MoveSurfaceGrab {
 
             // Try to find a new snap candidate (skip if on cooldown)
             if cooldown.is_none()
-                && let Some((snapped_pos, _)) =
-                    find_snap_candidate(natural_pos, p.extent, p.others, p.gap, p.threshold)
+                && let Some((snapped_pos, _)) = find_snap_candidate(natural_pos, p)
             {
                 *snap = Some(AxisSnap {
                     snapped_pos,
@@ -304,13 +327,29 @@ impl MoveSurfaceGrab {
 mod tests {
     use super::*;
 
+    /// Helper: create a SnapRect that always overlaps on the perpendicular axis.
+    /// For horizontal tests (snapping X), Y range covers -10000..10000.
+    /// For vertical tests (snapping Y), X range covers -10000..10000.
+    fn rect_h(x_low: f64, x_high: f64) -> SnapRect {
+        SnapRect { x_low, x_high, y_low: -10000.0, y_high: 10000.0 }
+    }
+
+    /// Helper: build SnapParams for horizontal (X-axis) tests with full perp overlap.
+    fn params_h<'a>(extent: f64, others: &'a [SnapRect], gap: f64, threshold: f64) -> SnapParams<'a> {
+        SnapParams {
+            extent, perp_low: -10000.0, perp_high: 10000.0, horizontal: true,
+            others, gap, threshold, break_force: 32.0,
+        }
+    }
+
     #[test]
     fn snap_right_edge_to_left_edge() {
         // Window at x=100, width=200 (right edge at 300)
         // Other window starts at x=310
         // With gap=8, snap should place origin at 310-8-200 = 102
-        let others = vec![(310.0, 510.0)];
-        let result = find_snap_candidate(100.0, 200.0, &others, 8.0, 16.0);
+        let others = vec![rect_h(310.0, 510.0)];
+        let p = params_h(200.0, &others, 8.0, 16.0);
+        let result = find_snap_candidate(100.0, &p);
         assert!(result.is_some());
         let (origin, _dist) = result.unwrap();
         assert!((origin - 102.0).abs() < 0.001);
@@ -321,8 +360,9 @@ mod tests {
         // Window at x=500, width=200
         // Other window ends at x=492
         // With gap=8, snap should place origin at 492+8 = 500
-        let others = vec![(200.0, 492.0)];
-        let result = find_snap_candidate(500.0, 200.0, &others, 8.0, 16.0);
+        let others = vec![rect_h(200.0, 492.0)];
+        let p = params_h(200.0, &others, 8.0, 16.0);
+        let result = find_snap_candidate(500.0, &p);
         assert!(result.is_some());
         let (origin, _dist) = result.unwrap();
         assert!((origin - 500.0).abs() < 0.001);
@@ -330,8 +370,9 @@ mod tests {
 
     #[test]
     fn no_snap_when_too_far() {
-        let others = vec![(500.0, 700.0)];
-        let result = find_snap_candidate(100.0, 200.0, &others, 8.0, 16.0);
+        let others = vec![rect_h(500.0, 700.0)];
+        let p = params_h(200.0, &others, 8.0, 16.0);
+        let result = find_snap_candidate(100.0, &p);
         assert!(result.is_none());
     }
 
@@ -340,10 +381,11 @@ mod tests {
         // Two other windows — edge-to-edge distance picks the closer one
         // Dragged right edge at 300
         let others = vec![
-            (310.0, 510.0), // |300 - 310| = 10
-            (305.0, 505.0), // |300 - 305| = 5 ← closer
+            rect_h(310.0, 510.0), // |300 - 310| = 10
+            rect_h(305.0, 505.0), // |300 - 305| = 5 ← closer
         ];
-        let result = find_snap_candidate(100.0, 200.0, &others, 8.0, 16.0);
+        let p = params_h(200.0, &others, 8.0, 16.0);
+        let result = find_snap_candidate(100.0, &p);
         assert!(result.is_some());
         let (origin, _) = result.unwrap();
         // Closer: 305 - 8 - 200 = 97
@@ -354,9 +396,12 @@ mod tests {
     fn snap_break_and_cooldown() {
         let mut snap: Option<AxisSnap> = None;
         let mut cooldown: Option<f64> = None;
-        let others = vec![(308.0, 508.0)];
+        let others = vec![rect_h(308.0, 508.0)];
         let p = SnapParams {
             extent: 200.0,
+            perp_low: 0.0,
+            perp_high: 100.0,
+            horizontal: true,
             others: &others,
             gap: 8.0,
             threshold: 16.0,
@@ -400,12 +445,14 @@ mod tests {
         // Window partially overlapping, left edge near other's right edge from inside.
         // Other: [0, 500], dragged: width=200 at x=480, left edge 20px from other right (500)
         // Snap places window just outside: origin = 500 + 12 = 512
-        // At engagement: |natural(480) - snapped(512)| = 32 — old abs logic would break instantly
         let mut snap: Option<AxisSnap> = None;
         let mut cooldown: Option<f64> = None;
-        let others = vec![(0.0, 500.0)];
+        let others = vec![rect_h(0.0, 500.0)];
         let p = SnapParams {
             extent: 200.0,
+            perp_low: 0.0,
+            perp_high: 100.0,
+            horizontal: true,
             others: &others,
             gap: 12.0,
             threshold: 24.0,
@@ -426,5 +473,80 @@ mod tests {
         let pos = MoveSurfaceGrab::update_axis(&mut snap, &mut cooldown, 440.0, &p);
         assert!(snap.is_none(), "should break on retreat past engage point");
         assert!((pos - 440.0).abs() < 0.001);
+    }
+
+    // --- Perpendicular overlap filtering tests ---
+
+    #[test]
+    fn no_snap_without_perpendicular_overlap() {
+        // Dragged window: x=100, w=200, y=0..100
+        // Other window: x=310..510, y=1000..1200 — far away on Y axis
+        let others = vec![SnapRect { x_low: 310.0, x_high: 510.0, y_low: 1000.0, y_high: 1200.0 }];
+        let p = SnapParams {
+            extent: 200.0, perp_low: 0.0, perp_high: 100.0, horizontal: true,
+            others: &others, gap: 8.0, threshold: 16.0, break_force: 32.0,
+        };
+        let result = find_snap_candidate(100.0, &p);
+        assert!(result.is_none(), "should not snap to window with no Y overlap");
+    }
+
+    #[test]
+    fn snap_with_edge_to_edge_perpendicular_within_tolerance() {
+        // Dragged window: x=100, w=200, y=0..100
+        // Other window: x=310..510, y=110..300 — Y gap of 10, within threshold of 16
+        let others = vec![SnapRect { x_low: 310.0, x_high: 510.0, y_low: 110.0, y_high: 300.0 }];
+        let p = SnapParams {
+            extent: 200.0, perp_low: 0.0, perp_high: 100.0, horizontal: true,
+            others: &others, gap: 8.0, threshold: 16.0, break_force: 32.0,
+        };
+        let result = find_snap_candidate(100.0, &p);
+        assert!(result.is_some(), "should snap when perp gap is within threshold");
+        let (origin, _) = result.unwrap();
+        assert!((origin - 102.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn no_snap_perpendicular_gap_exceeds_tolerance() {
+        // Dragged window: x=100, w=200, y=0..100
+        // Other window: x=310..510, y=200..400 — Y gap of 100, well beyond threshold=16
+        let others = vec![SnapRect { x_low: 310.0, x_high: 510.0, y_low: 200.0, y_high: 400.0 }];
+        let p = SnapParams {
+            extent: 200.0, perp_low: 0.0, perp_high: 100.0, horizontal: true,
+            others: &others, gap: 8.0, threshold: 16.0, break_force: 32.0,
+        };
+        let result = find_snap_candidate(100.0, &p);
+        assert!(result.is_none(), "should not snap when perp gap exceeds threshold");
+    }
+
+    #[test]
+    fn y_axis_snap_filters_by_x_overlap() {
+        // Snapping along Y (horizontal=false): perpendicular axis is X
+        // Dragged window: y=100, h=200, x=0..300
+        // Other A: y=310..510, x=0..300 — X overlaps → should snap
+        // Other B: y=310..510, x=5000..5300 — no X overlap → filtered
+        let others = vec![
+            SnapRect { x_low: 0.0, x_high: 300.0, y_low: 310.0, y_high: 510.0 },
+            SnapRect { x_low: 5000.0, x_high: 5300.0, y_low: 310.0, y_high: 510.0 },
+        ];
+        let p = SnapParams {
+            extent: 200.0, perp_low: 0.0, perp_high: 300.0, horizontal: false,
+            others: &others, gap: 8.0, threshold: 16.0, break_force: 32.0,
+        };
+        let result = find_snap_candidate(100.0, &p);
+        assert!(result.is_some(), "should snap to Y-nearby window with X overlap");
+        let (origin, _) = result.unwrap();
+        // 310 - 8 - 200 = 102
+        assert!((origin - 102.0).abs() < 0.001);
+
+        // Same but ONLY the far-away window → no snap
+        let far_only = vec![
+            SnapRect { x_low: 5000.0, x_high: 5300.0, y_low: 310.0, y_high: 510.0 },
+        ];
+        let p2 = SnapParams {
+            extent: 200.0, perp_low: 0.0, perp_high: 300.0, horizontal: false,
+            others: &far_only, gap: 8.0, threshold: 16.0, break_force: 32.0,
+        };
+        let result = find_snap_candidate(100.0, &p2);
+        assert!(result.is_none(), "should not snap when only far window exists");
     }
 }
