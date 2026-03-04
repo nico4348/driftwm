@@ -1,4 +1,8 @@
-use driftwm::config::{Action, Config, MouseAction, BTN_RIGHT};
+use driftwm::config::{
+    Action, BindingContext, Config, ContinuousAction, GestureConfigEntry, GestureTrigger,
+    MouseAction, BTN_RIGHT,
+};
+use smithay::backend::input::AxisSource;
 use smithay::input::keyboard::{keysyms, Keysym, ModifiersState};
 
 // ── Modifier helpers ─────────────────────────────────────────────────────
@@ -90,28 +94,84 @@ fn toml_keybinding_unbind_with_none() {
 }
 
 #[test]
-fn toml_mouse_binding_override() {
+fn toml_mouse_binding_override_anywhere() {
     let toml = r#"
-        [mouse]
+        [mouse.anywhere]
         "Mod+Right" = "pan-viewport"
     "#;
     let config = Config::from_toml(toml).unwrap();
-    let result = config.mouse_button_lookup(&logo(), BTN_RIGHT);
+    let result = config.mouse_button_lookup_ctx(&logo(), BTN_RIGHT, BindingContext::Anywhere);
     assert!(
         matches!(result, Some(MouseAction::PanViewport)),
-        "Mod+Right should resolve to PanViewport"
+        "Mod+Right in anywhere should resolve to PanViewport"
     );
 }
 
 #[test]
 fn toml_mouse_binding_unbind_with_none() {
     let toml = r#"
-        [mouse]
-        "Mod+Scroll" = "none"
+        [mouse.anywhere]
+        "Mod+wheel-scroll" = "none"
     "#;
     let config = Config::from_toml(toml).unwrap();
-    let result = config.mouse_scroll_lookup(&logo());
-    assert!(result.is_none(), "Mod+Scroll should be unbound after setting to none");
+    let result = config.mouse_scroll_lookup_ctx(&logo(), AxisSource::Wheel, BindingContext::Anywhere);
+    assert!(result.is_none(), "Mod+wheel-scroll should be unbound after setting to none");
+}
+
+#[test]
+fn toml_gesture_section_parses() {
+    let toml = r#"
+        [gestures.anywhere]
+        "4-finger-swipe" = "center-nearest"
+    "#;
+    let config = Config::from_toml(toml).unwrap();
+    let entry = config.gesture_lookup(
+        &ModifiersState::default(),
+        &GestureTrigger::Swipe { fingers: 4 },
+        BindingContext::Anywhere,
+    );
+    assert!(entry.is_some(), "4-finger-swipe should be bound in gestures.anywhere");
+}
+
+#[test]
+fn toml_gesture_context_priority() {
+    let toml = r#"
+        [gestures.on-window]
+        "3-finger-swipe" = "move-window"
+        [gestures.anywhere]
+        "3-finger-swipe" = "pan-viewport"
+    "#;
+    let config = Config::from_toml(toml).unwrap();
+    // on-window should override anywhere
+    let entry = config.gesture_lookup(
+        &ModifiersState::default(),
+        &GestureTrigger::Swipe { fingers: 3 },
+        BindingContext::OnWindow,
+    );
+    assert!(
+        matches!(entry, Some(GestureConfigEntry::Continuous(ContinuousAction::MoveWindow))),
+        "on-window should take priority over anywhere"
+    );
+    // on-canvas should fall back to anywhere
+    let entry = config.gesture_lookup(
+        &ModifiersState::default(),
+        &GestureTrigger::Swipe { fingers: 3 },
+        BindingContext::OnCanvas,
+    );
+    assert!(
+        matches!(entry, Some(GestureConfigEntry::Continuous(ContinuousAction::PanViewport))),
+        "on-canvas should fall back to anywhere"
+    );
+}
+
+#[test]
+fn toml_old_flat_mouse_section_is_rejected() {
+    let toml = r#"
+        [mouse]
+        "alt+left" = "move-window"
+    "#;
+    let result = Config::from_toml(toml);
+    assert!(result.is_err(), "old flat [mouse] format should be rejected by deny_unknown_fields");
 }
 
 #[test]
@@ -194,4 +254,25 @@ fn toml_background_tilde_expansion() {
     if let Some(ref path) = config.background.shader_path {
         assert!(!path.starts_with("~"), "tilde should be expanded");
     }
+}
+
+#[test]
+fn toml_gesture_anywhere_only_not_on_window() {
+    let toml = r#"
+        [gestures.on-window]
+        "3-finger-swipe" = "move-window"
+        [gestures.anywhere]
+        "3-finger-swipe" = "pan-viewport"
+    "#;
+    let config = Config::from_toml(toml).unwrap();
+    // Query with Anywhere context — should return the anywhere binding, not on-window
+    let entry = config.gesture_lookup(
+        &ModifiersState::default(),
+        &GestureTrigger::Swipe { fingers: 3 },
+        BindingContext::Anywhere,
+    );
+    assert!(
+        matches!(entry, Some(GestureConfigEntry::Continuous(ContinuousAction::PanViewport))),
+        "Anywhere context should return the anywhere binding, not on-window"
+    );
 }

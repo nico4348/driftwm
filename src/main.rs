@@ -19,6 +19,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    // --check-config: validate config and exit
+    if std::env::args().any(|a| a == "--check-config") {
+        let _config = driftwm::config::Config::load();
+        tracing::info!("Config OK");
+        return Ok(());
+    }
+
     // Parse --backend arg
     let backend_name = std::env::args()
         .skip_while(|a| a != "--backend")

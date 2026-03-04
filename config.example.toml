@@ -1,6 +1,7 @@
 # driftwm configuration
 # Copy to ~/.config/driftwm/config.toml and uncomment what you want to change.
 # Missing fields use built-in defaults. Invalid entries are logged and skipped.
+# Run `driftwm --check-config` to validate without starting the compositor.
 
 # Window manager modifier key: "super" (default) or "alt"
 # mod_key = "super"
@@ -137,21 +138,68 @@
 # "Print" = "spawn grim - | wl-copy"
 
 # Mouse bindings: "Modifier+...+Trigger" = "action"
-# Only modifier-based bindings — canvas fundamentals are hardcoded:
-#   scroll on empty canvas → pan, drag on empty → pan,
-#   click on window → focus, CSD drag → move/resize
-# Triggers: left, right, middle (buttons), scroll (axis)
+# Context-aware: on-window, on-canvas, anywhere.
+# Specific context checked first, then "anywhere" as fallback.
+# Click-to-focus and SSD decoration clicks are always hardcoded.
+# Triggers: left, right, middle (buttons), trackpad-scroll, wheel-scroll
 # Merges with defaults. Use "none" to unbind.
 #
-# Mouse actions: move-window, resize-window, pan-viewport, zoom, navigate, toggle-fullscreen, none
+# Mouse actions: move-window, resize-window, pan-viewport, zoom, center-nearest, toggle-fullscreen
 
-[mouse]
+[mouse.on-window]
 # "alt+left" = "move-window"
 # "alt+right" = "resize-window"
 # "alt+middle" = "toggle-fullscreen"
+
+[mouse.on-canvas]
+# "left" = "pan-viewport"            # unmodified left-click on empty canvas → pan
+# "trackpad-scroll" = "pan-viewport" # trackpad scroll on empty canvas → pan
+# "wheel-scroll" = "zoom"            # mouse wheel on empty canvas → zoom
+
+[mouse.anywhere]
 # "mod+left" = "pan-viewport"
-# "mod+ctrl+left" = "navigate"
-# "mod+scroll" = "zoom"
+# "mod+ctrl+left" = "center-nearest" # direction from drag delta
+# "mod+trackpad-scroll" = "pan-viewport"
+# "mod+wheel-scroll" = "zoom"
+
+# Gesture bindings: "Modifier+N-finger-<type>" = "action"
+# Context-aware: on-window, on-canvas, anywhere.
+# Unbound gestures are forwarded to the focused app.
+# "none" unbinds (prevents anywhere fallback, still forwards).
+#
+# Gesture types:
+#   N-finger-swipe            — continuous OR threshold (action determines behavior)
+#   N-finger-swipe-up/down/left/right — threshold only, checked before swipe fallback
+#   3-finger-doubletap-swipe  — continuous OR threshold (3-finger tap then swipe)
+#   N-finger-pinch            — continuous only (use pinch-in/out for discrete)
+#   N-finger-pinch-in/out     — threshold only
+#   N-finger-hold             — threshold only (fires on release)
+#
+# Continuous actions: pan-viewport, zoom, move-window, resize-window
+# Threshold actions: center-nearest, center-window, home-toggle, zoom-to-fit, exec <cmd>, etc.
+
+[gestures.on-window]
+# "alt+3-finger-swipe" = "resize-window"
+# "3-finger-doubletap-swipe" = "move-window"
+
+[gestures.on-canvas]
+# "2-finger-pinch" = "zoom"
+
+[gestures.anywhere]
+# "3-finger-swipe" = "pan-viewport"         # continuous (per-frame dx/dy)
+# "4-finger-swipe" = "center-nearest"       # threshold (accumulate, detect direction, fire once)
+# "mod+3-finger-swipe" = "center-nearest"   # mod makes 3-finger swipe navigate too
+# Per-direction overrides (threshold only, checked before swipe fallback):
+# "4-finger-swipe-up" = "exec brightnessctl set +5%"
+# "4-finger-swipe-down" = "exec brightnessctl set 5%-"
+# "mod+2-finger-pinch" = "zoom"             # mod overrides app forwarding
+# "3-finger-pinch" = "zoom"                 # continuous
+# "4-finger-pinch-in" = "zoom-to-fit"       # threshold
+# "4-finger-pinch-out" = "home-toggle"      # threshold
+# "mod+3-finger-pinch-in" = "zoom-to-fit"
+# "mod+3-finger-pinch-out" = "home-toggle"
+# "4-finger-hold" = "center-window"         # fires on release
+# "mod+3-finger-hold" = "center-window"
 
 # Window rules: match windows by app_id and apply behavioral overrides.
 # To find an app's app_id: cat $XDG_RUNTIME_DIR/driftwm/state (see "windows=" line)

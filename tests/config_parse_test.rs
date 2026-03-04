@@ -1,8 +1,10 @@
 use driftwm::config::{
-    Action, Config, Direction, ModKey, MouseAction, MouseTrigger,
-    BTN_LEFT, BTN_RIGHT,
-    parse_action, parse_direction, parse_key_combo, parse_mouse_action, parse_mouse_binding,
+    Action, BindingContext, Config, ContinuousAction, Direction, GestureConfigEntry, ModKey,
+    MouseAction, MouseTrigger, ThresholdAction, BTN_LEFT, BTN_RIGHT,
+    parse_action, parse_direction, parse_gesture_binding, parse_gesture_config_entry,
+    parse_gesture_trigger, parse_key_combo, parse_mouse_action, parse_mouse_binding,
 };
+use smithay::backend::input::AxisSource;
 use smithay::input::keyboard::{keysyms, Keysym, ModifiersState};
 
 // ── Modifier helpers ─────────────────────────────────────────────────────
@@ -157,10 +159,17 @@ fn parse_mouse_binding_mod_shift_right_with_super() {
 }
 
 #[test]
-fn parse_mouse_binding_mod_scroll_with_super() {
-    let binding = parse_mouse_binding("Mod+Scroll", ModKey::Super).unwrap();
+fn parse_mouse_binding_mod_trackpad_scroll_with_super() {
+    let binding = parse_mouse_binding("Mod+trackpad-scroll", ModKey::Super).unwrap();
     assert!(binding.modifiers.logo);
-    assert_eq!(binding.trigger, MouseTrigger::Scroll);
+    assert_eq!(binding.trigger, MouseTrigger::TrackpadScroll);
+}
+
+#[test]
+fn parse_mouse_binding_mod_wheel_scroll_with_super() {
+    let binding = parse_mouse_binding("Mod+wheel-scroll", ModKey::Super).unwrap();
+    assert!(binding.modifiers.logo);
+    assert_eq!(binding.trigger, MouseTrigger::WheelScroll);
 }
 
 #[test]
@@ -212,17 +221,17 @@ fn parse_direction_unknown_is_error() {
     assert!(result.is_err(), "unknown direction should return Err");
 }
 
-// ── Default mouse bindings ────────────────────────────────────────────────
+// ── Default mouse bindings (context-aware) ───────────────────────────────
 
 #[test]
 fn default_mouse_bindings_move_window_on_alt_left() {
     let config = Config::default();
     let alt = mods(true, false, false, false);
-    let result = config.mouse_button_lookup(&alt, BTN_LEFT);
-    assert!(result.is_some(), "Alt+Left should be bound");
+    let result = config.mouse_button_lookup_ctx(&alt, BTN_LEFT, BindingContext::OnWindow);
+    assert!(result.is_some(), "Alt+Left on window should be bound");
     assert!(
         matches!(result.unwrap(), MouseAction::MoveWindow),
-        "Alt+Left should resolve to MoveWindow"
+        "Alt+Left on window should resolve to MoveWindow"
     );
 }
 
@@ -230,39 +239,267 @@ fn default_mouse_bindings_move_window_on_alt_left() {
 fn default_mouse_bindings_resize_window_on_alt_right() {
     let config = Config::default();
     let alt = mods(true, false, false, false);
-    let result = config.mouse_button_lookup(&alt, BTN_RIGHT);
-    assert!(result.is_some(), "Alt+Right should be bound");
+    let result = config.mouse_button_lookup_ctx(&alt, BTN_RIGHT, BindingContext::OnWindow);
+    assert!(result.is_some(), "Alt+Right on window should be bound");
     assert!(
         matches!(result.unwrap(), MouseAction::ResizeWindow),
-        "Alt+Right should resolve to ResizeWindow"
+        "Alt+Right on window should resolve to ResizeWindow"
     );
 }
 
 #[test]
-fn default_mouse_bindings_pan_viewport_on_super_left() {
+fn default_mouse_bindings_pan_viewport_on_super_left_anywhere() {
     let config = Config::default();
-    let result = config.mouse_button_lookup(&logo(), BTN_LEFT);
-    assert!(result.is_some(), "Super+Left should be bound");
+    let result = config.mouse_button_lookup_ctx(&logo(), BTN_LEFT, BindingContext::Anywhere);
+    assert!(result.is_some(), "Super+Left anywhere should be bound");
     assert!(
         matches!(result.unwrap(), MouseAction::PanViewport),
-        "Super+Left should resolve to PanViewport"
+        "Super+Left anywhere should resolve to PanViewport"
     );
 }
 
 #[test]
-fn default_mouse_bindings_zoom_on_super_scroll() {
+fn default_mouse_bindings_zoom_on_super_wheel_scroll() {
     let config = Config::default();
-    let result = config.mouse_scroll_lookup(&logo());
-    assert!(result.is_some(), "Super+Scroll should be bound");
+    let result = config.mouse_scroll_lookup_ctx(&logo(), AxisSource::Wheel, BindingContext::Anywhere);
+    assert!(result.is_some(), "Super+WheelScroll should be bound");
     assert!(
         matches!(result.unwrap(), MouseAction::Zoom),
-        "Super+Scroll should resolve to Zoom"
+        "Super+WheelScroll should resolve to Zoom"
     );
 }
 
-// ── Tilde expansion (via parse_action + Config::load indirectly) ──────────
-// expand_tilde is private; test it through mouse_scroll_lookup / mouse_button_lookup
-// by confirming Config::default() builds without panic and background paths stay None.
+#[test]
+fn default_mouse_bindings_pan_on_super_trackpad_scroll() {
+    let config = Config::default();
+    let result = config.mouse_scroll_lookup_ctx(&logo(), AxisSource::Finger, BindingContext::Anywhere);
+    assert!(result.is_some(), "Super+TrackpadScroll should be bound");
+    assert!(
+        matches!(result.unwrap(), MouseAction::PanViewport),
+        "Super+TrackpadScroll should resolve to PanViewport"
+    );
+}
+
+#[test]
+fn default_mouse_bindings_empty_canvas_left_click_pans() {
+    let config = Config::default();
+    let result = config.mouse_button_lookup_ctx(
+        &mods(false, false, false, false), BTN_LEFT, BindingContext::OnCanvas,
+    );
+    assert!(
+        matches!(result, Some(MouseAction::PanViewport)),
+        "Unmodified left click on canvas should resolve to PanViewport"
+    );
+}
+
+#[test]
+fn default_mouse_bindings_context_fallback_to_anywhere() {
+    let config = Config::default();
+    // Super+Left is defined in anywhere → should be found from on-window context too
+    let result = config.mouse_button_lookup_ctx(&logo(), BTN_LEFT, BindingContext::OnWindow);
+    assert!(
+        matches!(result, Some(MouseAction::PanViewport)),
+        "Super+Left should fall back from on-window to anywhere"
+    );
+}
+
+// ── Gesture trigger parsing ──────────────────────────────────────────────
+
+#[test]
+fn parse_gesture_trigger_3_finger_swipe() {
+    use driftwm::config::GestureTrigger;
+    let trigger = parse_gesture_trigger("3-finger-swipe").unwrap();
+    assert_eq!(trigger, GestureTrigger::Swipe { fingers: 3 });
+}
+
+#[test]
+fn parse_gesture_trigger_4_finger_pinch_in() {
+    use driftwm::config::GestureTrigger;
+    let trigger = parse_gesture_trigger("4-finger-pinch-in").unwrap();
+    assert_eq!(trigger, GestureTrigger::PinchIn { fingers: 4 });
+}
+
+#[test]
+fn parse_gesture_trigger_3_finger_doubletap_swipe() {
+    use driftwm::config::GestureTrigger;
+    let trigger = parse_gesture_trigger("3-finger-doubletap-swipe").unwrap();
+    assert_eq!(trigger, GestureTrigger::DoubletapSwipe { fingers: 3 });
+}
+
+#[test]
+fn parse_gesture_trigger_4_finger_hold() {
+    use driftwm::config::GestureTrigger;
+    let trigger = parse_gesture_trigger("4-finger-hold").unwrap();
+    assert_eq!(trigger, GestureTrigger::Hold { fingers: 4 });
+}
+
+#[test]
+fn parse_gesture_trigger_invalid_finger_count() {
+    assert!(parse_gesture_trigger("1-finger-swipe").is_err());
+    assert!(parse_gesture_trigger("6-finger-swipe").is_err());
+}
+
+// ── Gesture binding parsing ──────────────────────────────────────────────
+
+#[test]
+fn parse_gesture_binding_with_modifier() {
+    use driftwm::config::GestureTrigger;
+    let binding = parse_gesture_binding("mod+3-finger-swipe", ModKey::Super).unwrap();
+    assert!(binding.modifiers.logo);
+    assert_eq!(binding.trigger, GestureTrigger::Swipe { fingers: 3 });
+}
+
+#[test]
+fn parse_gesture_binding_without_modifier() {
+    use driftwm::config::GestureTrigger;
+    let binding = parse_gesture_binding("4-finger-pinch-out", ModKey::Super).unwrap();
+    assert_eq!(binding.modifiers, driftwm::config::Modifiers::EMPTY);
+    assert_eq!(binding.trigger, GestureTrigger::PinchOut { fingers: 4 });
+}
+
+// ── Gesture config entry validation ──────────────────────────────────────
+
+#[test]
+fn gesture_swipe_continuous_action_is_valid() {
+    use driftwm::config::GestureTrigger;
+    let trigger = GestureTrigger::Swipe { fingers: 3 };
+    let entry = parse_gesture_config_entry(&trigger, "pan-viewport").unwrap();
+    assert!(matches!(entry, GestureConfigEntry::Continuous(ContinuousAction::PanViewport)));
+}
+
+#[test]
+fn gesture_swipe_threshold_action_is_valid() {
+    use driftwm::config::GestureTrigger;
+    let trigger = GestureTrigger::Swipe { fingers: 4 };
+    let entry = parse_gesture_config_entry(&trigger, "center-nearest").unwrap();
+    assert!(matches!(entry, GestureConfigEntry::Threshold(ThresholdAction::CenterNearest)));
+}
+
+#[test]
+fn gesture_pinch_continuous_is_valid() {
+    use driftwm::config::GestureTrigger;
+    let trigger = GestureTrigger::Pinch { fingers: 3 };
+    let entry = parse_gesture_config_entry(&trigger, "zoom").unwrap();
+    assert!(matches!(entry, GestureConfigEntry::Continuous(ContinuousAction::Zoom)));
+}
+
+#[test]
+fn gesture_pinch_threshold_is_error() {
+    use driftwm::config::GestureTrigger;
+    let trigger = GestureTrigger::Pinch { fingers: 3 };
+    let result = parse_gesture_config_entry(&trigger, "zoom-to-fit");
+    assert!(result.is_err(), "pinch + threshold action should be rejected");
+    assert!(
+        result.unwrap_err().contains("pinch-in or pinch-out"),
+        "error message should suggest pinch-in/pinch-out"
+    );
+}
+
+#[test]
+fn gesture_pinch_in_threshold_is_valid() {
+    use driftwm::config::GestureTrigger;
+    let trigger = GestureTrigger::PinchIn { fingers: 4 };
+    let entry = parse_gesture_config_entry(&trigger, "zoom-to-fit").unwrap();
+    assert!(matches!(entry, GestureConfigEntry::Threshold(ThresholdAction::Fixed(_))));
+}
+
+#[test]
+fn gesture_pinch_in_continuous_is_error() {
+    use driftwm::config::GestureTrigger;
+    let trigger = GestureTrigger::PinchIn { fingers: 4 };
+    let result = parse_gesture_config_entry(&trigger, "zoom");
+    assert!(result.is_err(), "pinch-in + continuous action should be rejected");
+}
+
+#[test]
+fn gesture_swipe_up_continuous_is_error() {
+    use driftwm::config::GestureTrigger;
+    let trigger = GestureTrigger::SwipeUp { fingers: 4 };
+    let result = parse_gesture_config_entry(&trigger, "pan-viewport");
+    assert!(result.is_err(), "swipe-up + continuous action should be rejected");
+}
+
+#[test]
+fn gesture_swipe_up_threshold_is_valid() {
+    use driftwm::config::GestureTrigger;
+    let trigger = GestureTrigger::SwipeUp { fingers: 4 };
+    let entry = parse_gesture_config_entry(&trigger, "exec notify-send hi").unwrap();
+    assert!(matches!(entry, GestureConfigEntry::Threshold(ThresholdAction::Fixed(_))));
+}
+
+#[test]
+fn gesture_hold_continuous_is_error() {
+    use driftwm::config::GestureTrigger;
+    let trigger = GestureTrigger::Hold { fingers: 4 };
+    let result = parse_gesture_config_entry(&trigger, "zoom");
+    assert!(result.is_err(), "hold + continuous action should be rejected");
+}
+
+#[test]
+fn gesture_hold_threshold_is_valid() {
+    use driftwm::config::GestureTrigger;
+    let trigger = GestureTrigger::Hold { fingers: 4 };
+    let entry = parse_gesture_config_entry(&trigger, "center-window").unwrap();
+    assert!(matches!(entry, GestureConfigEntry::Threshold(ThresholdAction::Fixed(_))));
+}
+
+// ── Gesture validation edge cases ─────────────────────────────────────────
+
+#[test]
+fn gesture_binding_invalid_modifier_is_error() {
+    let result = parse_gesture_binding("typo+3-finger-swipe", ModKey::Super);
+    assert!(result.is_err(), "unknown modifier in gesture binding should be rejected");
+}
+
+#[test]
+fn gesture_zoom_on_swipe_is_error() {
+    use driftwm::config::GestureTrigger;
+    let trigger = GestureTrigger::Swipe { fingers: 3 };
+    let result = parse_gesture_config_entry(&trigger, "zoom");
+    assert!(result.is_err(), "zoom on swipe trigger should be rejected");
+    assert!(
+        result.unwrap_err().contains("pinch trigger"),
+        "error message should mention pinch trigger"
+    );
+}
+
+#[test]
+fn gesture_center_nearest_on_hold_is_error() {
+    use driftwm::config::GestureTrigger;
+    let trigger = GestureTrigger::Hold { fingers: 4 };
+    let result = parse_gesture_config_entry(&trigger, "center-nearest");
+    assert!(result.is_err(), "center-nearest on hold should be rejected");
+}
+
+#[test]
+fn gesture_center_nearest_on_pinch_in_is_error() {
+    use driftwm::config::GestureTrigger;
+    let trigger = GestureTrigger::PinchIn { fingers: 4 };
+    let result = parse_gesture_config_entry(&trigger, "center-nearest");
+    assert!(result.is_err(), "center-nearest on pinch-in should be rejected");
+}
+
+#[test]
+fn gesture_doubletap_swipe_move_is_valid() {
+    use driftwm::config::GestureTrigger;
+    let trigger = GestureTrigger::DoubletapSwipe { fingers: 3 };
+    let entry = parse_gesture_config_entry(&trigger, "move-window").unwrap();
+    assert!(matches!(entry, GestureConfigEntry::Continuous(ContinuousAction::MoveWindow)));
+}
+
+#[test]
+fn gesture_doubletap_swipe_pan_is_error() {
+    use driftwm::config::GestureTrigger;
+    let trigger = GestureTrigger::DoubletapSwipe { fingers: 3 };
+    let result = parse_gesture_config_entry(&trigger, "pan-viewport");
+    assert!(result.is_err(), "doubletap-swipe + pan-viewport should be rejected");
+    assert!(
+        result.unwrap_err().contains("move-window and resize-window"),
+        "error message should mention supported actions"
+    );
+}
+
+// ── Background paths ─────────────────────────────────────────────────────
 
 #[test]
 fn default_config_background_paths_are_none() {

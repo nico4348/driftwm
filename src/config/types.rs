@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::f64::consts::FRAC_1_SQRT_2;
+use std::hash::Hash;
 
 use smithay::input::keyboard::ModifiersState;
 
@@ -79,7 +81,7 @@ pub struct Modifiers {
 }
 
 impl Modifiers {
-    pub(crate) const EMPTY: Self = Self {
+    pub const EMPTY: Self = Self {
         ctrl: false,
         alt: false,
         shift: false,
@@ -178,10 +180,18 @@ impl KeyCombo {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BindingContext {
+    OnWindow,
+    OnCanvas,
+    Anywhere,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum MouseTrigger {
     Button(u32),
-    Scroll,
+    TrackpadScroll,
+    WheelScroll,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -190,14 +200,102 @@ pub struct MouseBinding {
     pub trigger: MouseTrigger,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MouseAction {
     MoveWindow,
     ResizeWindow,
     PanViewport,
     Zoom,
-    Navigate,
+    CenterNearest,
     ToggleFullscreen,
+}
+
+// ── Gesture types ────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum GestureTrigger {
+    Swipe { fingers: u32 },
+    SwipeUp { fingers: u32 },
+    SwipeDown { fingers: u32 },
+    SwipeLeft { fingers: u32 },
+    SwipeRight { fingers: u32 },
+    DoubletapSwipe { fingers: u32 },
+    Pinch { fingers: u32 },
+    PinchIn { fingers: u32 },
+    PinchOut { fingers: u32 },
+    Hold { fingers: u32 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GestureBinding {
+    pub modifiers: Modifiers,
+    pub trigger: GestureTrigger,
+}
+
+/// Actions for continuous gesture/mouse triggers (per-frame updates).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContinuousAction {
+    PanViewport,
+    Zoom,
+    MoveWindow,
+    ResizeWindow,
+}
+
+/// Actions for threshold gesture triggers (fire once after accumulation).
+#[derive(Clone, Debug)]
+pub enum ThresholdAction {
+    CenterNearest,
+    Fixed(Action),
+}
+
+/// Resolved at parse time from trigger + action combination.
+#[derive(Clone, Debug)]
+pub enum GestureConfigEntry {
+    Continuous(ContinuousAction),
+    Threshold(ThresholdAction),
+}
+
+// ── Context bindings container ───────────────────────────────────────
+
+pub struct ContextBindings<K: Eq + Hash, V> {
+    pub on_window: HashMap<K, V>,
+    pub on_canvas: HashMap<K, V>,
+    pub anywhere: HashMap<K, V>,
+}
+
+impl<K: Eq + Hash, V> ContextBindings<K, V> {
+    pub fn empty() -> Self {
+        Self {
+            on_window: HashMap::new(),
+            on_canvas: HashMap::new(),
+            anywhere: HashMap::new(),
+        }
+    }
+
+    pub fn lookup(&self, key: &K, context: BindingContext) -> Option<&V> {
+        let specific = match context {
+            BindingContext::OnWindow => &self.on_window,
+            BindingContext::OnCanvas => &self.on_canvas,
+            BindingContext::Anywhere => return self.anywhere.get(key),
+        };
+        specific.get(key).or_else(|| self.anywhere.get(key))
+    }
+
+    fn context_map_mut(&mut self, context: BindingContext) -> &mut HashMap<K, V> {
+        match context {
+            BindingContext::OnWindow => &mut self.on_window,
+            BindingContext::OnCanvas => &mut self.on_canvas,
+            BindingContext::Anywhere => &mut self.anywhere,
+        }
+    }
+
+    pub fn insert(&mut self, context: BindingContext, key: K, value: V) {
+        self.context_map_mut(context).insert(key, value);
+    }
+
+    pub fn remove(&mut self, context: BindingContext, key: &K) {
+        self.context_map_mut(context).remove(key);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

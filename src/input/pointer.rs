@@ -17,12 +17,25 @@ use smithay::{
 };
 
 use driftwm::canvas::{self, CanvasPos, canvas_to_screen};
-use driftwm::config::{self, MouseAction};
+use driftwm::config::{self, BindingContext, MouseAction};
 use crate::decorations::DecorationHit;
 use crate::grabs::{MoveSurfaceGrab, NavigateGrab, PanGrab, ResizeState, ResizeSurfaceGrab, SnapState};
 use crate::state::{DriftWm, FocusTarget, PendingMiddleClick};
 
 impl DriftWm {
+    /// Determine the binding context for the current pointer position.
+    pub(super) fn pointer_context(&self, pos: Point<f64, smithay::utils::Logical>) -> BindingContext {
+        let over_window = self.space.element_under(pos).is_some_and(|(w, _)| {
+            !config::applied_rule(w.toplevel().unwrap().wl_surface())
+                .is_some_and(|r| r.no_focus)
+        });
+        if over_window || self.canvas_layer_under(pos).is_some() {
+            BindingContext::OnWindow
+        } else {
+            BindingContext::OnCanvas
+        }
+    }
+
     /// Priority order when button pressed:
     /// 1. Configured mouse bindings (move, resize, pan, etc.)
     /// 2. Normal click on window → focus + raise + forward to client
@@ -53,7 +66,8 @@ impl DriftWm {
             if button == config::BTN_MIDDLE
                 && {
                     let kb = self.seat.get_keyboard().unwrap();
-                    self.config.mouse_button_lookup(&kb.modifier_state(), button).is_none()
+                    let ctx = self.pointer_context(pointer.current_location());
+                    self.config.mouse_button_lookup_ctx(&kb.modifier_state(), button, ctx).is_none()
                 }
             {
                 // Cancel any existing pending click first
@@ -84,10 +98,12 @@ impl DriftWm {
             // proceed to compositor grabs; plain clicks forward to the app.
             // ToggleFullscreen is special — exiting IS the action, so return immediately.
             if self.fullscreen.is_some() {
-                if matches!(self.config.mouse_button_lookup(&mods, button), Some(MouseAction::ToggleFullscreen)) {
+                // In fullscreen the window fills the screen — treat as OnWindow
+                let fs_lookup = self.config.mouse_button_lookup_ctx(&mods, button, BindingContext::OnWindow);
+                if matches!(fs_lookup, Some(MouseAction::ToggleFullscreen)) {
                     self.exit_fullscreen_remap_pointer(pos);
                     return;
-                } else if self.config.mouse_button_lookup(&mods, button).is_some() {
+                } else if fs_lookup.is_some() {
                     pos = self.exit_fullscreen_remap_pointer(pos);
                 } else {
                     pointer.button(
@@ -180,8 +196,9 @@ impl DriftWm {
                 }
             }
 
-            // Check configured mouse bindings
-            if let Some(action) = self.config.mouse_button_lookup(&mods, button).cloned() {
+            // Check configured mouse bindings (context-aware)
+            let context = self.pointer_context(pos);
+            if let Some(action) = self.config.mouse_button_lookup_ctx(&mods, button, context).cloned() {
                 match action {
                     MouseAction::MoveWindow => {
                         if let Some((window, _)) =
@@ -231,11 +248,12 @@ impl DriftWm {
                     }
                     MouseAction::PanViewport => {
                         self.panning = true;
-                        let grab = self.make_pan_grab(pos, button, false);
+                        let from_empty = context == BindingContext::OnCanvas;
+                        let grab = self.make_pan_grab(pos, button, from_empty);
                         pointer.set_grab(self, grab, serial, Focus::Clear);
                         return;
                     }
-                    MouseAction::Navigate => {
+                    MouseAction::CenterNearest => {
                         let screen_pos = canvas_to_screen(CanvasPos(pos), self.camera, self.zoom).0;
                         let start_data = GrabStartData {
                             focus: None,
@@ -290,12 +308,6 @@ impl DriftWm {
             } else if let Some((focus, _)) = self.canvas_layer_under(pos) {
                 // Canvas-positioned layer surface: set keyboard focus
                 keyboard.set_focus(self, Some(focus), serial);
-            } else if button == config::BTN_LEFT {
-                // Left-click on empty canvas → pan
-                self.panning = true;
-                let grab = self.make_pan_grab(pos, button, true);
-                pointer.set_grab(self, grab, serial, Focus::Clear);
-                return;
             }
         }
 
@@ -385,18 +397,18 @@ impl DriftWm {
             return;
         }
 
-        // During fullscreen: bound scroll exits fullscreen and zooms;
-        // plain scroll forwards to the app.
+        let keyboard = self.seat.get_keyboard().unwrap();
+        let mods = keyboard.modifier_state();
+        let pointer = self.seat.get_pointer().unwrap();
+        let pos = pointer.current_location();
+        let source = event.source();
+
+        // During fullscreen: bound scroll exits fullscreen first; plain scroll forwards.
         if self.fullscreen.is_some() {
-            let keyboard = self.seat.get_keyboard().unwrap();
-            let mods = keyboard.modifier_state();
-            if matches!(self.config.mouse_scroll_lookup(&mods), Some(MouseAction::Zoom)) {
-                let pointer = self.seat.get_pointer().unwrap();
-                let pos = pointer.current_location();
+            if self.config.mouse_scroll_lookup_ctx(&mods, source, BindingContext::OnWindow).is_some() {
                 self.exit_fullscreen_remap_pointer(pos);
-                // Fall through to zoom logic below
+                // Fall through to dispatch below
             } else {
-                let pointer = self.seat.get_pointer().unwrap();
                 let frame = build_client_axis_frame::<I>(&event);
                 pointer.axis(self, frame);
                 pointer.frame(self);
@@ -404,163 +416,84 @@ impl DriftWm {
             }
         }
 
-        let keyboard = self.seat.get_keyboard().unwrap();
-        let mods = keyboard.modifier_state();
-        let pointer = self.seat.get_pointer().unwrap();
-        let pos = pointer.current_location();
-
-        // Configured scroll binding (Mod+scroll):
-        //   Mouse wheel (Wheel) → zoom, cursor-anchored
-        //   Trackpad (Finger)   → pan anywhere, ignoring windows
-        if matches!(self.config.mouse_scroll_lookup(&mods), Some(MouseAction::Zoom)) {
-            let is_trackpad = event.source() == AxisSource::Finger;
-
-            if is_trackpad {
-                // Mod+trackpad scroll → pan anywhere (same as 3-finger swipe)
-                let h = event.amount(Axis::Horizontal).unwrap_or(0.0);
-                let v = event.amount(Axis::Vertical).unwrap_or(0.0);
-                if h != 0.0 || v != 0.0 {
-                    let s = self.config.scroll_speed;
-                    let canvas_delta: Point<f64, smithay::utils::Logical> = Point::from((
-                        h * s / self.zoom,
-                        v * s / self.zoom,
-                    ));
-                    self.drift_pan(canvas_delta);
-                    let new_pos = pos + canvas_delta;
-                    let serial = SERIAL_COUNTER.next_serial();
-                    let under = self.surface_under(new_pos);
-                    pointer.motion(
-                        self,
-                        under,
-                        &MotionEvent {
-                            location: new_pos,
-                            serial,
-                            time: Event::time_msec(&event),
-                        },
-                    );
-                }
-                let frame = AxisFrame::new(Event::time_msec(&event));
-                pointer.axis(self, frame);
-                pointer.frame(self);
-                return;
-            }
-
-            // Mouse wheel → zoom (vertical axis), cursor-anchored, immediate
-            let v = event.amount(Axis::Vertical)
-                .or_else(|| event.amount_v120(Axis::Vertical).map(|v| v * 15.0 / 120.0))
-                .unwrap_or(0.0);
-            if v != 0.0 {
-                let steps = -v * self.config.scroll_speed / 30.0;
-                let factor = self.config.zoom_step.powf(steps);
-                let new_zoom = (self.zoom * factor).clamp(self.min_zoom(), canvas::MAX_ZOOM);
-
-                if new_zoom != self.zoom {
-                    self.overview_return = None;
-                    let screen_pos = canvas_to_screen(
-                        CanvasPos(pos), self.camera, self.zoom,
-                    ).0;
-                    self.camera = canvas::zoom_anchor_camera(pos, screen_pos, new_zoom);
-                    self.zoom = new_zoom;
-                    self.zoom_target = None;
-                    self.zoom_animation_center = None;
-                    self.camera_target = None;
-                    self.momentum.stop();
-                    self.update_output_from_camera();
-
-                    let under = self.surface_under(pos);
-                    let serial = SERIAL_COUNTER.next_serial();
-                    pointer.motion(
-                        self,
-                        under,
-                        &MotionEvent {
-                            location: pos,
-                            serial,
-                            time: Event::time_msec(&event),
-                        },
-                    );
-                }
-            }
-            let frame = AxisFrame::new(Event::time_msec(&event));
-            pointer.axis(self, frame);
-            pointer.frame(self);
-            return;
-        }
-
-        // Empty canvas (or continuing a recent pan gesture):
-        //   Trackpad (Finger) → pan viewport
-        //   Mouse wheel (Wheel) → zoom, cursor-anchored
-        let over_window = self.space.element_under(pos).is_some_and(|(w, _)| {
-            !config::applied_rule(w.toplevel().unwrap().wl_surface())
-                .is_some_and(|r| r.no_focus)
-        });
-        let over_canvas_layer = self.canvas_layer_under(pos).is_some();
+        // Compute context — recent_pan stickiness forces OnCanvas to prevent
+        // jitter when a window slides under the pointer during a pan gesture.
         let recent_pan = self
             .last_scroll_pan
             .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(150));
-        if !over_window && !over_canvas_layer || recent_pan {
-            let is_trackpad = event.source() == AxisSource::Finger;
+        let context = if recent_pan {
+            BindingContext::OnCanvas
+        } else {
+            self.pointer_context(pos)
+        };
 
-            if is_trackpad {
-                self.last_scroll_pan = Some(std::time::Instant::now());
-                let h = event.amount(Axis::Horizontal).unwrap_or(0.0);
-                let v = event.amount(Axis::Vertical).unwrap_or(0.0);
-                if h != 0.0 || v != 0.0 {
-                    let s = self.config.scroll_speed;
-                    let canvas_delta: Point<f64, smithay::utils::Logical> = Point::from((
-                        h * s / self.zoom,
-                        v * s / self.zoom,
-                    ));
-                    self.drift_pan(canvas_delta);
-
-                    let new_pos = pos + canvas_delta;
-                    let serial = SERIAL_COUNTER.next_serial();
-                    let under = self.surface_under(new_pos);
-                    pointer.motion(
-                        self,
-                        under,
-                        &MotionEvent {
-                            location: new_pos,
-                            serial,
-                            time: Event::time_msec(&event),
-                        },
-                    );
-                }
-            } else {
-                // Mouse wheel on empty canvas → zoom
-                let v = event.amount(Axis::Vertical)
-                    .or_else(|| event.amount_v120(Axis::Vertical).map(|v| v * 15.0 / 120.0))
-                    .unwrap_or(0.0);
-                if v != 0.0 {
-                    let steps = -v * self.config.scroll_speed / 30.0;
-                    let factor = self.config.zoom_step.powf(steps);
-                    let new_zoom = (self.zoom * factor).clamp(self.min_zoom(), canvas::MAX_ZOOM);
-
-                    if new_zoom != self.zoom {
-                        self.overview_return = None;
-                        let screen_pos = canvas_to_screen(
-                            CanvasPos(pos), self.camera, self.zoom,
-                        ).0;
-                        self.camera = canvas::zoom_anchor_camera(pos, screen_pos, new_zoom);
-                        self.zoom = new_zoom;
-                        self.zoom_target = None;
-                        self.zoom_animation_center = None;
-                        self.camera_target = None;
-                        self.momentum.stop();
-                        self.update_output_from_camera();
-
-                        let under = self.surface_under(pos);
+        // Single lookup: context-aware
+        if let Some(action) = self.config.mouse_scroll_lookup_ctx(&mods, source, context).cloned() {
+            match action {
+                MouseAction::PanViewport => {
+                    if source == AxisSource::Finger {
+                        self.last_scroll_pan = Some(std::time::Instant::now());
+                    }
+                    let h = event.amount(Axis::Horizontal).unwrap_or(0.0);
+                    let v = event.amount(Axis::Vertical).unwrap_or(0.0);
+                    if h != 0.0 || v != 0.0 {
+                        let s = self.config.scroll_speed;
+                        let canvas_delta: Point<f64, smithay::utils::Logical> = Point::from((
+                            h * s / self.zoom,
+                            v * s / self.zoom,
+                        ));
+                        self.drift_pan(canvas_delta);
+                        let new_pos = pos + canvas_delta;
                         let serial = SERIAL_COUNTER.next_serial();
+                        let under = self.surface_under(new_pos);
                         pointer.motion(
                             self,
                             under,
                             &MotionEvent {
-                                location: pos,
+                                location: new_pos,
                                 serial,
                                 time: Event::time_msec(&event),
                             },
                         );
                     }
                 }
+                MouseAction::Zoom => {
+                    let v = event.amount(Axis::Vertical)
+                        .or_else(|| event.amount_v120(Axis::Vertical).map(|v| v * 15.0 / 120.0))
+                        .unwrap_or(0.0);
+                    if v != 0.0 {
+                        let steps = -v * self.config.scroll_speed / 30.0;
+                        let factor = self.config.zoom_step.powf(steps);
+                        let new_zoom = (self.zoom * factor).clamp(self.min_zoom(), canvas::MAX_ZOOM);
+
+                        if new_zoom != self.zoom {
+                            self.overview_return = None;
+                            let screen_pos = canvas_to_screen(
+                                CanvasPos(pos), self.camera, self.zoom,
+                            ).0;
+                            self.camera = canvas::zoom_anchor_camera(pos, screen_pos, new_zoom);
+                            self.zoom = new_zoom;
+                            self.zoom_target = None;
+                            self.zoom_animation_center = None;
+                            self.camera_target = None;
+                            self.momentum.stop();
+                            self.update_output_from_camera();
+
+                            let under = self.surface_under(pos);
+                            let serial = SERIAL_COUNTER.next_serial();
+                            pointer.motion(
+                                self,
+                                under,
+                                &MotionEvent {
+                                    location: pos,
+                                    serial,
+                                    time: Event::time_msec(&event),
+                                },
+                            );
+                        }
+                    }
+                }
+                _ => {} // other mouse actions don't apply to scroll
             }
             let frame = AxisFrame::new(Event::time_msec(&event));
             pointer.axis(self, frame);
@@ -568,7 +501,7 @@ impl DriftWm {
             return;
         }
 
-        // Over a window without Mod: forward scroll to the client
+        // No binding matched — forward scroll to the client
         let frame = build_client_axis_frame::<I>(&event);
         pointer.axis(self, frame);
         pointer.frame(self);

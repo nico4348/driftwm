@@ -42,7 +42,7 @@ pub fn parse_key_combo(s: &str, mod_key: ModKey) -> Result<KeyCombo, String> {
 }
 
 /// Parse a mouse binding string like "Mod+Shift+Left" into a MouseBinding.
-/// Last segment is the trigger: Left, Right, Middle, Scroll.
+/// Last segment is the trigger: Left, Right, Middle, TrackpadScroll, WheelScroll.
 pub fn parse_mouse_binding(s: &str, mod_key: ModKey) -> Result<MouseBinding, String> {
     let parts: Vec<&str> = s.split('+').map(str::trim).collect();
     if parts.is_empty() {
@@ -56,7 +56,8 @@ pub fn parse_mouse_binding(s: &str, mod_key: ModKey) -> Result<MouseBinding, Str
         "left" => MouseTrigger::Button(BTN_LEFT),
         "right" => MouseTrigger::Button(BTN_RIGHT),
         "middle" => MouseTrigger::Button(BTN_MIDDLE),
-        "scroll" => MouseTrigger::Scroll,
+        "trackpad-scroll" => MouseTrigger::TrackpadScroll,
+        "wheel-scroll" => MouseTrigger::WheelScroll,
         other => return Err(format!("unknown mouse trigger: {other}")),
     };
 
@@ -133,7 +134,7 @@ pub fn parse_mouse_action(s: &str) -> Result<MouseAction, String> {
         "resize-window" => Ok(MouseAction::ResizeWindow),
         "pan-viewport" => Ok(MouseAction::PanViewport),
         "zoom" => Ok(MouseAction::Zoom),
-        "navigate" => Ok(MouseAction::Navigate),
+        "center-nearest" => Ok(MouseAction::CenterNearest),
         "toggle-fullscreen" => Ok(MouseAction::ToggleFullscreen),
         other => Err(format!("unknown mouse action: {other}")),
     }
@@ -151,5 +152,215 @@ pub fn parse_direction(s: &str) -> Result<Direction, String> {
         "down-left" => Ok(Direction::DownLeft),
         "down-right" => Ok(Direction::DownRight),
         other => Err(format!("unknown direction: {other}")),
+    }
+}
+
+// ── Gesture parsing ──────────────────────────────────────────────────
+
+/// Parse a gesture binding string like "mod+3-finger-swipe" into a GestureBinding.
+/// Last segment(s) are the gesture trigger, preceding parts are modifiers.
+pub fn parse_gesture_binding(s: &str, mod_key: ModKey) -> Result<GestureBinding, String> {
+    let s = s.trim().to_lowercase();
+
+    // Find the split: everything before the N-finger part is modifiers.
+    // Strategy: scan for "N-finger" pattern to split modifiers from trigger.
+    let parts: Vec<&str> = s.split('+').map(str::trim).collect();
+    if parts.is_empty() {
+        return Err("empty gesture binding".to_string());
+    }
+
+    // Find the first part that starts with a digit (the finger count).
+    let trigger_idx = parts
+        .iter()
+        .position(|p| p.starts_with(|c: char| c.is_ascii_digit()))
+        .ok_or_else(|| format!("no gesture trigger found in '{s}' (expected N-finger-...)"))?;
+
+    let modifier_parts = &parts[..trigger_idx];
+    let mods = parse_modifiers(modifier_parts, mod_key)?;
+
+    // Rejoin the trigger parts (e.g. ["3", "finger", "swipe"] from "3-finger-swipe")
+    let trigger_str = parts[trigger_idx..].join("+");
+    let trigger = parse_gesture_trigger(&trigger_str)?;
+
+    Ok(GestureBinding {
+        modifiers: mods,
+        trigger,
+    })
+}
+
+/// Parse a gesture trigger string like "3-finger-swipe" or "4-finger-pinch-in".
+pub fn parse_gesture_trigger(s: &str) -> Result<GestureTrigger, String> {
+    let s = s.trim().to_lowercase();
+    let s = &s;
+
+    // Extract finger count: "N-finger-..."
+    let Some((fingers_str, gesture_type)) = s.split_once("-finger-") else {
+        return Err(format!("invalid gesture trigger '{s}' (expected N-finger-<type>)"));
+    };
+
+    let fingers: u32 = fingers_str
+        .parse()
+        .map_err(|_| format!("invalid finger count: '{fingers_str}'"))?;
+    if !(2..=5).contains(&fingers) {
+        return Err(format!("finger count must be 2-5, got {fingers}"));
+    }
+
+    match gesture_type {
+        "swipe" => Ok(GestureTrigger::Swipe { fingers }),
+        "swipe-up" => Ok(GestureTrigger::SwipeUp { fingers }),
+        "swipe-down" => Ok(GestureTrigger::SwipeDown { fingers }),
+        "swipe-left" => Ok(GestureTrigger::SwipeLeft { fingers }),
+        "swipe-right" => Ok(GestureTrigger::SwipeRight { fingers }),
+        "doubletap-swipe" => Ok(GestureTrigger::DoubletapSwipe { fingers }),
+        "pinch" => Ok(GestureTrigger::Pinch { fingers }),
+        "pinch-in" => Ok(GestureTrigger::PinchIn { fingers }),
+        "pinch-out" => Ok(GestureTrigger::PinchOut { fingers }),
+        "hold" => Ok(GestureTrigger::Hold { fingers }),
+        other => Err(format!("unknown gesture type: '{other}'")),
+    }
+}
+
+/// Check if an action string names a continuous action.
+fn parse_continuous_action(s: &str) -> Option<ContinuousAction> {
+    match s {
+        "pan-viewport" => Some(ContinuousAction::PanViewport),
+        "zoom" => Some(ContinuousAction::Zoom),
+        "move-window" => Some(ContinuousAction::MoveWindow),
+        "resize-window" => Some(ContinuousAction::ResizeWindow),
+        _ => None,
+    }
+}
+
+/// Check if an action string names a threshold action.
+fn parse_threshold_action(s: &str) -> Result<Option<ThresholdAction>, String> {
+    match s {
+        "center-nearest" => Ok(Some(ThresholdAction::CenterNearest)),
+        "center-window" | "home-toggle" | "zoom-to-fit" | "zoom-in" | "zoom-out"
+        | "zoom-reset" | "toggle-fullscreen" | "reload-config" | "quit" | "close-window" => {
+            let action = parse_action(s)?;
+            Ok(Some(ThresholdAction::Fixed(action)))
+        }
+        s if s.starts_with("exec ") || s.starts_with("spawn ") => {
+            let action = parse_action(s)?;
+            Ok(Some(ThresholdAction::Fixed(action)))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Validate trigger + action combination per the validation table.
+/// Returns a GestureConfigEntry or error with a specific message.
+pub fn parse_gesture_config_entry(
+    trigger: &GestureTrigger,
+    action_str: &str,
+) -> Result<GestureConfigEntry, String> {
+    let action_str = action_str.trim();
+    let is_continuous = parse_continuous_action(action_str);
+    let is_threshold = parse_threshold_action(action_str)?;
+
+    match trigger {
+        GestureTrigger::Swipe { .. } => {
+            if let Some(ContinuousAction::Zoom) = is_continuous {
+                return Err(
+                    "zoom requires a pinch trigger (needs scale from input)".to_string(),
+                );
+            }
+            if let Some(ca) = is_continuous {
+                Ok(GestureConfigEntry::Continuous(ca))
+            } else if let Some(ta) = is_threshold {
+                Ok(GestureConfigEntry::Threshold(ta))
+            } else {
+                Err(format!("unknown gesture action: '{action_str}'"))
+            }
+        }
+        GestureTrigger::DoubletapSwipe { .. } => {
+            match is_continuous {
+                Some(ContinuousAction::MoveWindow) => {
+                    return Ok(GestureConfigEntry::Continuous(ContinuousAction::MoveWindow));
+                }
+                Some(ContinuousAction::ResizeWindow) => {
+                    return Ok(GestureConfigEntry::Continuous(ContinuousAction::ResizeWindow));
+                }
+                Some(_) => {
+                    return Err(
+                        "doubletap-swipe only supports move-window and resize-window".to_string(),
+                    );
+                }
+                None => {}
+            }
+            if is_threshold.is_some() {
+                Err("doubletap-swipe only supports move-window and resize-window".to_string())
+            } else {
+                Err(format!("unknown gesture action: '{action_str}'"))
+            }
+        }
+        GestureTrigger::SwipeUp { .. }
+        | GestureTrigger::SwipeDown { .. }
+        | GestureTrigger::SwipeLeft { .. }
+        | GestureTrigger::SwipeRight { .. } => {
+            // Threshold only
+            if is_continuous.is_some() {
+                return Err(format!(
+                    "per-direction swipe triggers only accept threshold actions, \
+                     not '{action_str}'"
+                ));
+            }
+            if let Some(ta) = is_threshold {
+                Ok(GestureConfigEntry::Threshold(ta))
+            } else {
+                Err(format!("unknown gesture action: '{action_str}'"))
+            }
+        }
+        GestureTrigger::Pinch { .. } => {
+            // Continuous only
+            if let Some(ca) = is_continuous {
+                Ok(GestureConfigEntry::Continuous(ca))
+            } else if is_threshold.is_some() {
+                Err(
+                    "pinch trigger only accepts continuous actions (pan-viewport, zoom, \
+                     move-window, resize-window); use pinch-in or pinch-out for discrete actions"
+                        .to_string(),
+                )
+            } else {
+                Err(format!("unknown gesture action: '{action_str}'"))
+            }
+        }
+        GestureTrigger::PinchIn { .. } | GestureTrigger::PinchOut { .. } => {
+            if is_continuous.is_some() {
+                return Err(format!(
+                    "pinch-in/pinch-out triggers only accept threshold actions, \
+                     not '{action_str}'"
+                ));
+            }
+            if matches!(is_threshold, Some(ThresholdAction::CenterNearest)) {
+                return Err(
+                    "center-nearest requires a swipe trigger (needs direction from input)"
+                        .to_string(),
+                );
+            }
+            if let Some(ta) = is_threshold {
+                Ok(GestureConfigEntry::Threshold(ta))
+            } else {
+                Err(format!("unknown gesture action: '{action_str}'"))
+            }
+        }
+        GestureTrigger::Hold { .. } => {
+            if is_continuous.is_some() {
+                return Err(format!(
+                    "hold trigger only accepts threshold actions, not '{action_str}'"
+                ));
+            }
+            if matches!(is_threshold, Some(ThresholdAction::CenterNearest)) {
+                return Err(
+                    "center-nearest requires a swipe trigger (needs direction from input)"
+                        .to_string(),
+                );
+            }
+            if let Some(ta) = is_threshold {
+                Ok(GestureConfigEntry::Threshold(ta))
+            } else {
+                Err(format!("unknown gesture action: '{action_str}'"))
+            }
+        }
     }
 }

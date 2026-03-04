@@ -15,20 +15,23 @@ Inspired by [vxwm](https://codeberg.org/wh1tepearl/vxwm) and [niri](https://gith
 The screen is a viewport onto an infinite 2D plane. Each window has absolute
 coordinates on this plane. You move around with trackpad gestures:
 
-- **2-finger scroll** on empty desktop — pan viewport
-- **3-finger scroll** anywhere — pan viewport (ignores windows)
-- **3-finger double-tap+drag** on a window — move that window
-- **`Alt` + 3-finger drag** on a window — resize that window
-- **2-finger pinch** on empty desktop — zoom
-- **3-finger pinch** anywhere — zoom (ignores windows)
+- **2-finger pinch** on empty canvas — zoom
+- **3-finger swipe** anywhere — pan viewport
+- **3-finger doubletap-swipe** on a window — move that window
+- **Alt + 3-finger swipe** on a window — resize that window
+- **3-finger pinch** anywhere — zoom
 - **4-finger swipe** — jump to the nearest window in that direction
-- **4-finger pinch in** — toggle overview (zoom-to-fit)
-- **4-finger pinch out** — toggle home position
-- **4-finger hold (tap)** — center focused window + reset zoom
+- **4-finger pinch in** — zoom-to-fit (overview)
+- **4-finger pinch out** — home toggle
+- **4-finger hold** — center focused window
 
-**Small trackpad alternative**: hold `Mod` to use fewer fingers — `Mod`+2/3-finger replaces 3/4-finger gestures. Move and resize window gestures stay the same.
+**Small trackpad alternative**: hold `Mod` to use 3-finger instead of 4-finger for navigation gestures.
 
-Mouse: scroll wheel zooms, click-drag pans. `Mod` + drag/zoom works anywhere. `Mod+Ctrl` + drag navigates to nearest window.
+Mouse: trackpad scroll pans, mouse wheel zooms on empty canvas. `Mod` + drag/scroll works anywhere. `Mod+Ctrl` + drag navigates to nearest window.
+
+All gesture and mouse bindings are configurable with context-awareness
+(on-window, on-canvas, anywhere). Unbound gestures forward to apps.
+See [`config.example.toml`](config.example.toml) for the full default set.
 
 A static wallpaper gives no feedback when panning an infinite canvas, so
 the background scrolls with the viewport. Any GLSL fragment shader works as
@@ -45,9 +48,9 @@ Early development — usable as a daily driver on single-monitor setups.
 - Window navigation: directional jump (cone search), MRU cycling, home toggle
 - Layer shell support (waybar, fuzzel, mako) + foreign toplevel management
 - GLSL shader backgrounds or tiled images, scrolling with the viewport
-- Trackpad gestures: 3-finger pan/move/resize, pinch zoom, 4-finger navigate/home/overview
+- Configurable trackpad gestures and mouse bindings with context-awareness (on-window/on-canvas/anywhere)
 - Runs nested (winit) or on real hardware (udev/DRM with libseat)
-- TOML config — all keybindings, mouse bindings, and input device settings are configurable
+- TOML config — all keybindings, mouse bindings, gesture bindings, and input settings are configurable
 - Server-side decorations with title bar, shadows, and resize borders for non-CSD apps
 - 20+ Wayland protocols: DMA-BUF, popups, clipboard, layer shell, and more
 

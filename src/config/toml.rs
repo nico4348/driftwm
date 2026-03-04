@@ -17,7 +17,8 @@ pub(super) struct ConfigFile {
     pub decorations: DecorationFileConfig,
     pub autostart: Option<Vec<String>>,
     pub keybindings: Option<HashMap<String, String>>,
-    pub mouse: Option<HashMap<String, String>>,
+    pub mouse: MouseFileConfig,
+    pub gestures: GestureFileConfig,
     pub window_rules: Option<Vec<WindowRuleFile>>,
 }
 
@@ -128,6 +129,26 @@ pub(super) struct WindowRuleFile {
     #[serde(default)]
     pub no_focus: bool,
     pub decoration: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct MouseFileConfig {
+    #[serde(rename = "on-window")]
+    pub on_window: Option<HashMap<String, String>>,
+    #[serde(rename = "on-canvas")]
+    pub on_canvas: Option<HashMap<String, String>>,
+    pub anywhere: Option<HashMap<String, String>>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct GestureFileConfig {
+    #[serde(rename = "on-window")]
+    pub on_window: Option<HashMap<String, String>>,
+    #[serde(rename = "on-canvas")]
+    pub on_canvas: Option<HashMap<String, String>>,
+    pub anywhere: Option<HashMap<String, String>>,
 }
 
 pub fn config_path() -> std::path::PathBuf {

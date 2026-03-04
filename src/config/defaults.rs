@@ -272,19 +272,18 @@ pub(super) fn default_bindings(mod_key: ModKey, cycle_mod: CycleModifier) -> Has
     ])
 }
 
-pub(super) fn default_mouse_bindings(mod_key: ModKey) -> HashMap<MouseBinding, MouseAction> {
+pub(super) fn default_mouse_bindings(mod_key: ModKey) -> ContextBindings<MouseBinding, MouseAction> {
     let m = mod_key.base();
     let alt_only = Modifiers {
         alt: true,
         ..Modifiers::EMPTY
     };
-
     let m_ctrl = Modifiers {
         ctrl: true,
         ..m.clone()
     };
 
-    HashMap::from([
+    let on_window = HashMap::from([
         (
             MouseBinding {
                 modifiers: alt_only.clone(),
@@ -301,6 +300,40 @@ pub(super) fn default_mouse_bindings(mod_key: ModKey) -> HashMap<MouseBinding, M
         ),
         (
             MouseBinding {
+                modifiers: alt_only.clone(),
+                trigger: MouseTrigger::Button(BTN_MIDDLE),
+            },
+            MouseAction::ToggleFullscreen,
+        ),
+    ]);
+
+    let on_canvas = HashMap::from([
+        (
+            MouseBinding {
+                modifiers: Modifiers::EMPTY,
+                trigger: MouseTrigger::Button(BTN_LEFT),
+            },
+            MouseAction::PanViewport,
+        ),
+        (
+            MouseBinding {
+                modifiers: Modifiers::EMPTY,
+                trigger: MouseTrigger::TrackpadScroll,
+            },
+            MouseAction::PanViewport,
+        ),
+        (
+            MouseBinding {
+                modifiers: Modifiers::EMPTY,
+                trigger: MouseTrigger::WheelScroll,
+            },
+            MouseAction::Zoom,
+        ),
+    ]);
+
+    let anywhere = HashMap::from([
+        (
+            MouseBinding {
                 modifiers: m.clone(),
                 trigger: MouseTrigger::Button(BTN_LEFT),
             },
@@ -311,23 +344,155 @@ pub(super) fn default_mouse_bindings(mod_key: ModKey) -> HashMap<MouseBinding, M
                 modifiers: m_ctrl,
                 trigger: MouseTrigger::Button(BTN_LEFT),
             },
-            MouseAction::Navigate,
+            MouseAction::CenterNearest,
+        ),
+        (
+            MouseBinding {
+                modifiers: m.clone(),
+                trigger: MouseTrigger::TrackpadScroll,
+            },
+            MouseAction::PanViewport,
         ),
         (
             MouseBinding {
                 modifiers: m,
-                trigger: MouseTrigger::Scroll,
+                trigger: MouseTrigger::WheelScroll,
             },
             MouseAction::Zoom,
         ),
+    ]);
+
+    ContextBindings {
+        on_window,
+        on_canvas,
+        anywhere,
+    }
+}
+
+pub(super) fn default_gesture_bindings(mod_key: ModKey) -> ContextBindings<GestureBinding, GestureConfigEntry> {
+    let m = mod_key.base();
+    let alt_only = Modifiers {
+        alt: true,
+        ..Modifiers::EMPTY
+    };
+
+    let on_window = HashMap::from([
         (
-            MouseBinding {
-                modifiers: alt_only.clone(),
-                trigger: MouseTrigger::Button(BTN_MIDDLE),
+            GestureBinding {
+                modifiers: alt_only,
+                trigger: GestureTrigger::Swipe { fingers: 3 },
             },
-            MouseAction::ToggleFullscreen,
+            GestureConfigEntry::Continuous(ContinuousAction::ResizeWindow),
         ),
-    ])
+        (
+            GestureBinding {
+                modifiers: Modifiers::EMPTY,
+                trigger: GestureTrigger::DoubletapSwipe { fingers: 3 },
+            },
+            GestureConfigEntry::Continuous(ContinuousAction::MoveWindow),
+        ),
+    ]);
+
+    let on_canvas = HashMap::from([
+        (
+            GestureBinding {
+                modifiers: Modifiers::EMPTY,
+                trigger: GestureTrigger::Pinch { fingers: 2 },
+            },
+            GestureConfigEntry::Continuous(ContinuousAction::Zoom),
+        ),
+    ]);
+
+    let anywhere = HashMap::from([
+        // mod+2-finger-pinch = zoom (even over windows)
+        (
+            GestureBinding {
+                modifiers: mod_key.base(),
+                trigger: GestureTrigger::Pinch { fingers: 2 },
+            },
+            GestureConfigEntry::Continuous(ContinuousAction::Zoom),
+        ),
+        // Swipe
+        (
+            GestureBinding {
+                modifiers: Modifiers::EMPTY,
+                trigger: GestureTrigger::Swipe { fingers: 3 },
+            },
+            GestureConfigEntry::Continuous(ContinuousAction::PanViewport),
+        ),
+        (
+            GestureBinding {
+                modifiers: Modifiers::EMPTY,
+                trigger: GestureTrigger::Swipe { fingers: 4 },
+            },
+            GestureConfigEntry::Threshold(ThresholdAction::CenterNearest),
+        ),
+        // Pinch
+        (
+            GestureBinding {
+                modifiers: Modifiers::EMPTY,
+                trigger: GestureTrigger::Pinch { fingers: 3 },
+            },
+            GestureConfigEntry::Continuous(ContinuousAction::Zoom),
+        ),
+        (
+            GestureBinding {
+                modifiers: Modifiers::EMPTY,
+                trigger: GestureTrigger::PinchIn { fingers: 4 },
+            },
+            GestureConfigEntry::Threshold(ThresholdAction::Fixed(Action::ZoomToFit)),
+        ),
+        (
+            GestureBinding {
+                modifiers: Modifiers::EMPTY,
+                trigger: GestureTrigger::PinchOut { fingers: 4 },
+            },
+            GestureConfigEntry::Threshold(ThresholdAction::Fixed(Action::HomeToggle)),
+        ),
+        (
+            GestureBinding {
+                modifiers: m.clone(),
+                trigger: GestureTrigger::PinchIn { fingers: 3 },
+            },
+            GestureConfigEntry::Threshold(ThresholdAction::Fixed(Action::ZoomToFit)),
+        ),
+        (
+            GestureBinding {
+                modifiers: m.clone(),
+                trigger: GestureTrigger::PinchOut { fingers: 3 },
+            },
+            GestureConfigEntry::Threshold(ThresholdAction::Fixed(Action::HomeToggle)),
+        ),
+        // Hold
+        (
+            GestureBinding {
+                modifiers: Modifiers::EMPTY,
+                trigger: GestureTrigger::Hold { fingers: 4 },
+            },
+            GestureConfigEntry::Threshold(ThresholdAction::Fixed(Action::CenterWindow)),
+        ),
+        (
+            GestureBinding {
+                modifiers: m.clone(),
+                trigger: GestureTrigger::Hold { fingers: 3 },
+            },
+            GestureConfigEntry::Threshold(ThresholdAction::Fixed(Action::CenterWindow)),
+        ),
+        // Mod+swipe = navigate (same as 4-finger swipe)
+        (
+            GestureBinding {
+                modifiers: m,
+                trigger: GestureTrigger::Swipe { fingers: 3 },
+            },
+            GestureConfigEntry::Threshold(ThresholdAction::CenterNearest),
+        ),
+    ]);
+
+    ContextBindings {
+        on_window,
+        on_canvas,
+        anywhere,
+    }
 }
 
 fn detect_terminal() -> String {

@@ -92,73 +92,86 @@ carries the viewport smoothly until friction stops it.
 
 ### Trackpad gestures
 
-Requires libinput (udev backend). Finger count + context determines the action.
+Requires libinput (udev backend). All gesture bindings are configurable via
+`[gestures.on-window]`, `[gestures.on-canvas]`, and `[gestures.anywhere]` in
+config. Context resolution: specific context checked first, then anywhere as
+fallback. Unbound gestures are forwarded to the focused app.
+
 Once a gesture starts, the target is **locked for the gesture's duration** (even
 if the surface under the cursor changes mid-gesture).
 
-| Fingers | Type         | Context   | Action                             |
-| ------- | ------------ | --------- | ---------------------------------- |
-| 2       | scroll       | on window | Pass through to app                |
-| 2       | scroll       | desktop   | Pan viewport                       |
-| 2       | pinch        | on window | Pass through to app                |
-| 2       | pinch        | desktop   | Zoom in/out                        |
-| 3       | scroll       | anywhere  | Pan viewport (ignores windows)     |
-| 3       | dbl-tap+drag | on window | Move window (see below)            |
-| 3+Alt   | drag         | on window | Resize window                      |
-| 3       | pinch        | anywhere  | Zoom in/out (ignores windows)      |
-| 3+Mod   | scroll       | anywhere  | Center nearest window in direction |
-| 3+Mod   | pinch in     | anywhere  | Zoom-to-fit (overview)             |
-| 3+Mod   | pinch out    | anywhere  | Toggle home (0,0) ↔ previous       |
-| 3+Mod   | hold (tap)   | anywhere  | Center focused window + reset zoom |
-| 4       | scroll       | anywhere  | Center nearest window in direction |
-| 4       | pinch in     | anywhere  | Zoom-to-fit (overview)             |
-| 4       | pinch out    | anywhere  | Toggle home (0,0) ↔ previous       |
-| 4       | hold (tap)   | anywhere  | Center focused window + reset zoom |
+Default bindings:
 
-**3-finger double-tap-drag**: Tap with three fingers on a window (libinput
+| Gesture                      | Context   | Action                             |
+| ---------------------------- | --------- | ---------------------------------- |
+| 2-finger pinch               | on-canvas | Zoom in/out                        |
+| 2-finger pinch               | on-window | Forward to app (unbound)           |
+| 3-finger swipe               | anywhere  | Pan viewport (continuous)          |
+| 3-finger doubletap-swipe     | on-window | Move window                        |
+| Alt+3-finger swipe           | on-window | Resize window                      |
+| 3-finger pinch               | anywhere  | Zoom in/out (continuous)           |
+| Mod+3-finger swipe           | anywhere  | Center nearest window (threshold)  |
+| Mod+3-finger pinch-in        | anywhere  | Zoom-to-fit                        |
+| Mod+3-finger pinch-out       | anywhere  | Home toggle                        |
+| Mod+3-finger hold            | anywhere  | Center focused window              |
+| 4-finger swipe               | anywhere  | Center nearest window (threshold)  |
+| 4-finger pinch-in            | anywhere  | Zoom-to-fit                        |
+| 4-finger pinch-out           | anywhere  | Home toggle                        |
+| 4-finger hold                | anywhere  | Center focused window              |
+
+Gesture triggers are either **continuous** (per-frame dx/dy or scale updates) or
+**threshold** (accumulate input, fire once). For swipe, the action determines
+which: `pan-viewport` is continuous, `center-nearest` is threshold. For pinch,
+the trigger determines which: `pinch` is continuous, `pinch-in`/`pinch-out` are
+threshold. Per-direction swipe overrides (`swipe-up`, `swipe-down`, etc.) are
+also available for mapping individual directions to discrete actions.
+
+**3-finger doubletap-swipe**: Tap with three fingers on a window (libinput
 generates BTN_MIDDLE via tap-to-click), then immediately start a 3-finger
 swipe. The compositor buffers the middle click for 300ms — if a 3-finger swipe
 follows, the click is suppressed and the swipe enters move-window mode. If no
 swipe follows, the click is flushed to the app as a normal middle-click (paste).
-Immediate 3-finger scroll (without a preceding tap) always pans the viewport.
 
-**3-finger+Alt resize**: Edges inferred from pointer position in the window
+**Alt+3-finger resize**: Edges inferred from pointer position in the window
 (same quadrant logic as mouse). Uses Alt instead of Mod to avoid conflict with
 Mod+3-finger navigation gestures.
 
 **Mod+3-finger alternatives**: All 4-finger gestures (navigate, overview, home,
 center) are also available as Mod+3-finger for smaller trackpads where 4-finger
-gestures are awkward. The behavior is identical.
+gestures are awkward.
 
-**4-finger center**: Searches from cursor in the scroll direction for the
-nearest window (using a viewport-width search band). Centers it, focuses,
-raises, and warps cursor to its center. Repeat to hop window-to-window.
+**Threshold swipe (center-nearest)**: Accumulates swipe delta until a 16px
+threshold, detects one of 8 directions (4 cardinal + 4 diagonal using 45°
+sectors), then fires the action once.
 
-**4-finger pinch**: Pinch-in triggers zoom-to-fit (overview of all windows).
-Pinch-out triggers home toggle (snap to origin or return to previous position).
-Thresholds: scale < 0.8 for pinch-in, scale > 1.2 for pinch-out.
+**Threshold pinch**: Pinch-in fires when scale < 0.8, pinch-out when
+scale > 1.2.
 
-**4-finger hold (tap)**: Place four fingers on the trackpad and lift without
-swiping or pinching. Centers the currently focused window and resets zoom to 1.0.
-Requires a brief hold (~150ms) because libinput's gesture recognizer needs time
-to classify the touch — tap-to-click only handles up to 3 fingers.
+**Hold**: Place fingers on the trackpad and lift without swiping or pinching.
+Action fires on release.
 
 ### Mouse equivalents
 
-| Action           | Mouse input                          |
-| ---------------- | ------------------------------------ |
-| Pan viewport     | Click-drag on empty canvas           |
-| Pan viewport     | `Super` + left-drag (anywhere)       |
-| Zoom             | Scroll wheel on empty canvas         |
-| Zoom             | `Super` + scroll wheel (anywhere)    |
-| Move window      | `Alt` + left-drag                    |
-| Resize window    | `Alt` + right-drag                   |
-| Navigate nearest | `Super+Ctrl` + left-drag (natural)   |
+Mouse bindings are context-aware via `[mouse.on-window]`, `[mouse.on-canvas]`,
+and `[mouse.anywhere]`. Default bindings:
+
+| Action           | Trigger                            | Context   |
+| ---------------- | ---------------------------------- | --------- |
+| Pan viewport     | Left-click drag                    | on-canvas |
+| Pan viewport     | `Mod` + left-drag                  | anywhere  |
+| Zoom             | Mouse wheel                        | on-canvas |
+| Zoom             | `Mod` + mouse wheel                | anywhere  |
+| Pan viewport     | Trackpad scroll                    | on-canvas |
+| Pan viewport     | `Mod` + trackpad scroll            | anywhere  |
+| Move window      | `Alt` + left-drag                  | on-window |
+| Resize window    | `Alt` + right-drag                 | on-window |
+| Center nearest   | `Mod+Ctrl` + left-drag (natural)   | anywhere  |
+| Toggle fullscreen| `Alt` + middle-click               | on-window |
 
 **Trackpad vs mouse wheel**: both produce axis events but serve different
-purposes. The compositor uses `axis_source` to split them — trackpad scroll
-(`Finger`) pans the viewport, mouse wheel (`Wheel`) zooms. This means
-scroll-on-canvas does the right thing for each device without extra modifiers.
+purposes. Separate triggers (`trackpad-scroll` and `wheel-scroll`) allow
+per-device bindings — by default trackpad scroll pans the viewport while mouse
+wheel zooms on canvas.
 
 ### Edge auto-pan
 
@@ -358,12 +371,9 @@ natural_scroll = true      # default: true
 accel_speed = 0.0          # pointer acceleration (-1.0 to 1.0). default: 0.0
 ```
 
-Trackpad gesture mappings are **not configurable**. The gesture state machine
-encodes context-dependent logic (finger count × gesture type × hit-testing ×
-thresholds) that doesn't reduce to a simple config table. The gestures are the
-product's opinionated core UX. Libinput device settings (tap-to-click, natural
-scroll, accel) remain configurable since they affect low-level input behavior,
-not gesture semantics.
+Trackpad gestures and mouse bindings are fully configurable via context-aware
+sections (`on-window`, `on-canvas`, `anywhere`). See `config.example.toml` for
+the full default binding set and trigger/action vocabulary.
 
 ### Keyboard
 

@@ -3,16 +3,20 @@ mod parse;
 mod toml;
 mod types;
 
-pub use parse::{parse_action, parse_direction, parse_key_combo, parse_mouse_action, parse_mouse_binding};
+pub use parse::{
+    parse_action, parse_direction, parse_gesture_binding, parse_gesture_config_entry,
+    parse_gesture_trigger, parse_key_combo, parse_mouse_action, parse_mouse_binding,
+};
 pub use toml::config_path;
 pub use types::*;
 
 use std::collections::HashMap;
 
+use smithay::backend::input::AxisSource;
 use smithay::input::keyboard::{Keysym, ModifiersState};
 use smithay::utils::{Logical, Point};
 
-use defaults::{default_bindings, default_mouse_bindings};
+use defaults::{default_bindings, default_gesture_bindings, default_mouse_bindings};
 use toml::{ConfigFile, DecorationFileConfig, WindowRuleFile, expand_tilde};
 
 pub struct Config {
@@ -58,7 +62,8 @@ pub struct Config {
     pub nav_anchors: Vec<Point<f64, Logical>>,
     pub window_rules: Vec<WindowRule>,
     bindings: HashMap<KeyCombo, Action>,
-    pub mouse_bindings: HashMap<MouseBinding, MouseAction>,
+    pub mouse: ContextBindings<MouseBinding, MouseAction>,
+    pub gestures: ContextBindings<GestureBinding, GestureConfigEntry>,
 }
 
 impl Config {
@@ -71,26 +76,50 @@ impl Config {
         self.bindings.get(&combo)
     }
 
-    /// Look up a mouse button action by modifier state and button code.
-    pub fn mouse_button_lookup(
+    /// Look up a mouse button action by modifier state, button code, and context.
+    pub fn mouse_button_lookup_ctx(
         &self,
         modifiers: &ModifiersState,
         button: u32,
+        context: BindingContext,
     ) -> Option<&MouseAction> {
         let binding = MouseBinding {
             modifiers: Modifiers::from_state(modifiers),
             trigger: MouseTrigger::Button(button),
         };
-        self.mouse_bindings.get(&binding)
+        self.mouse.lookup(&binding, context)
     }
 
-    /// Look up a mouse scroll action by modifier state.
-    pub fn mouse_scroll_lookup(&self, modifiers: &ModifiersState) -> Option<&MouseAction> {
+    /// Look up a mouse scroll action by modifier state, axis source, and context.
+    pub fn mouse_scroll_lookup_ctx(
+        &self,
+        modifiers: &ModifiersState,
+        source: AxisSource,
+        context: BindingContext,
+    ) -> Option<&MouseAction> {
+        let trigger = match source {
+            AxisSource::Finger => MouseTrigger::TrackpadScroll,
+            _ => MouseTrigger::WheelScroll,
+        };
         let binding = MouseBinding {
             modifiers: Modifiers::from_state(modifiers),
-            trigger: MouseTrigger::Scroll,
+            trigger,
         };
-        self.mouse_bindings.get(&binding)
+        self.mouse.lookup(&binding, context)
+    }
+
+    /// Look up a gesture action by modifier state, trigger, and context.
+    pub fn gesture_lookup(
+        &self,
+        modifiers: &ModifiersState,
+        trigger: &GestureTrigger,
+        context: BindingContext,
+    ) -> Option<&GestureConfigEntry> {
+        let binding = GestureBinding {
+            modifiers: Modifiers::from_state(modifiers),
+            trigger: trigger.clone(),
+        };
+        self.gestures.lookup(&binding, context)
     }
 
     /// Parse a TOML string into a Config. Useful for testing and config reload.
@@ -186,24 +215,61 @@ impl Config {
         }
 
         let mut mouse_bindings = default_mouse_bindings(mod_key);
-        if let Some(user_mouse) = raw.mouse {
-            for (key_str, action_str) in &user_mouse {
-                match parse_mouse_binding(key_str, mod_key) {
-                    Ok(binding) => {
-                        if action_str == "none" {
-                            mouse_bindings.remove(&binding);
-                        } else {
-                            match parse_mouse_action(action_str) {
-                                Ok(action) => {
-                                    mouse_bindings.insert(binding, action);
-                                }
-                                Err(e) => {
-                                    tracing::warn!("Invalid mouse action '{action_str}': {e}");
+        for (ctx, section) in [
+            (BindingContext::OnWindow, raw.mouse.on_window),
+            (BindingContext::OnCanvas, raw.mouse.on_canvas),
+            (BindingContext::Anywhere, raw.mouse.anywhere),
+        ] {
+            if let Some(entries) = section {
+                for (key_str, action_str) in &entries {
+                    match parse_mouse_binding(key_str, mod_key) {
+                        Ok(binding) => {
+                            if action_str == "none" {
+                                mouse_bindings.remove(ctx, &binding);
+                            } else {
+                                match parse_mouse_action(action_str) {
+                                    Ok(action) => {
+                                        mouse_bindings.insert(ctx, binding, action);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Invalid mouse action '{action_str}': {e}");
+                                    }
                                 }
                             }
                         }
+                        Err(e) => tracing::warn!("Invalid mouse binding '{key_str}': {e}"),
                     }
-                    Err(e) => tracing::warn!("Invalid mouse binding '{key_str}': {e}"),
+                }
+            }
+        }
+
+        let mut gesture_bindings = default_gesture_bindings(mod_key);
+        for (ctx, section) in [
+            (BindingContext::OnWindow, raw.gestures.on_window),
+            (BindingContext::OnCanvas, raw.gestures.on_canvas),
+            (BindingContext::Anywhere, raw.gestures.anywhere),
+        ] {
+            if let Some(entries) = section {
+                for (key_str, action_str) in &entries {
+                    match parse_gesture_binding(key_str, mod_key) {
+                        Ok(binding) => {
+                            if action_str == "none" {
+                                gesture_bindings.remove(ctx, &binding);
+                            } else {
+                                match parse_gesture_config_entry(&binding.trigger, action_str) {
+                                    Ok(entry) => {
+                                        gesture_bindings.insert(ctx, binding, entry);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "Invalid gesture binding '{key_str}' = '{action_str}': {e}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => tracing::warn!("Invalid gesture binding '{key_str}': {e}"),
+                    }
                 }
             }
         }
@@ -277,7 +343,8 @@ impl Config {
             autostart: raw.autostart.unwrap_or_default(),
             window_rules,
             bindings,
-            mouse_bindings,
+            mouse: mouse_bindings,
+            gestures: gesture_bindings,
         }
     }
 
