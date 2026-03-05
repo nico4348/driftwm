@@ -3,6 +3,7 @@ use std::f64::consts::FRAC_1_SQRT_2;
 use std::hash::Hash;
 
 use smithay::input::keyboard::ModifiersState;
+use smithay::utils::Transform;
 
 pub const BTN_LEFT: u32 = 0x110;
 pub const BTN_RIGHT: u32 = 0x111;
@@ -393,6 +394,33 @@ impl DecorationConfig {
     pub const SHADOW_COLOR: [u8; 4] = [0x00, 0x00, 0x00, 0x20];
     pub const RESIZE_BORDER_WIDTH: i32 = 8;
     pub const CORNER_RADIUS: i32 = 8;
+}
+
+/// Per-output configuration from `[[outputs]]` config sections.
+#[derive(Clone, Debug)]
+pub struct OutputConfig {
+    pub name: String,
+    pub scale: Option<f64>,
+    pub transform: Option<Transform>,
+    pub position: OutputPosition,
+    pub mode: OutputMode,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum OutputPosition {
+    #[default]
+    Auto,
+    Fixed(i32, i32),
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum OutputMode {
+    #[default]
+    Preferred,
+    /// WxH — pick highest refresh rate.
+    Size(i32, i32),
+    /// WxH@Hz — approximate match (DRM reports millihertz).
+    SizeRefresh(i32, i32, u32),
 }
 
 /// Built-in dot grid shader — used when no shader_path or tile_path is configured.

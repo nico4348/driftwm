@@ -32,6 +32,7 @@ use smithay::{
 
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
+use driftwm::config::{OutputMode as ConfigOutputMode, OutputPosition};
 use crate::render::OutputRenderElements;
 use crate::backend::Backend;
 use crate::state::{CalloopData, DriftWm, init_output_state, log_err};
@@ -482,8 +483,7 @@ fn log_drm_connectors(drm: &DrmDevice) {
 
 /// Pick the best mode for a connector: prefer MODE_TYPE_PREFERRED,
 /// fall back to highest resolution (w*h), then highest refresh.
-fn pick_mode(connector: &connector::Info) -> Option<control::Mode> {
-    let modes = connector.modes();
+fn pick_preferred_mode(modes: &[control::Mode]) -> Option<control::Mode> {
     if modes.is_empty() {
         return None;
     }
@@ -498,6 +498,35 @@ fn pick_mode(connector: &connector::Info) -> Option<control::Mode> {
     }).copied()
 }
 
+/// Select a mode based on output config, falling back to preferred.
+pub(crate) fn pick_mode_for_config(
+    modes: &[control::Mode],
+    config: &ConfigOutputMode,
+) -> Option<control::Mode> {
+    match config {
+        ConfigOutputMode::Preferred => pick_preferred_mode(modes),
+        ConfigOutputMode::Size(w, h) => {
+            let matched = modes
+                .iter()
+                .filter(|m| m.size() == (*w as u16, *h as u16))
+                .max_by_key(|m| m.vrefresh() as u64);
+            if matched.is_none() {
+                tracing::warn!("No mode matching {w}x{h}, falling back to preferred");
+            }
+            matched.copied().or_else(|| pick_preferred_mode(modes))
+        }
+        ConfigOutputMode::SizeRefresh(w, h, hz) => {
+            let matched = modes.iter().find(|m| {
+                m.size() == (*w as u16, *h as u16) && m.vrefresh() == *hz
+            });
+            if matched.is_none() {
+                tracing::warn!("No mode matching {w}x{h}@{hz}Hz, falling back to preferred");
+            }
+            matched.copied().or_else(|| pick_preferred_mode(modes))
+        }
+    }
+}
+
 fn create_surface(
     drm: &mut DrmDevice,
     gbm: &GbmDevice<DrmDeviceFd>,
@@ -507,9 +536,20 @@ fn create_surface(
     dh: &smithay::reexports::wayland_server::DisplayHandle,
     state: &mut DriftWm,
 ) -> Option<SurfaceData> {
-    let mode = pick_mode(connector)?;
+    let connector_name = format!(
+        "{}-{}",
+        connector_type_name(connector),
+        connector.interface_id()
+    );
+
+    let output_cfg = state.config.output_config(&connector_name);
+
+    let config_mode = output_cfg
+        .map(|c| &c.mode)
+        .unwrap_or(&ConfigOutputMode::Preferred);
+    let mode = pick_mode_for_config(connector.modes(), config_mode)?;
     tracing::info!(
-        "Using mode: {}x{}@{}Hz",
+        "Output {connector_name}: mode {}x{}@{}Hz",
         mode.size().0,
         mode.size().1,
         mode.vrefresh()
@@ -523,15 +563,9 @@ fn create_surface(
         }
     };
 
-    let connector_name = format!(
-        "{}-{}",
-        connector_type_name(connector),
-        connector.interface_id()
-    );
-
     let (phys_w, phys_h) = connector.size().unwrap_or((0, 0));
     let output = Output::new(
-        connector_name,
+        connector_name.clone(),
         PhysicalProperties {
             size: (phys_w as i32, phys_h as i32).into(),
             subpixel: convert_subpixel(connector.subpixel()),
@@ -544,8 +578,22 @@ fn create_surface(
         size: (mode.size().0 as i32, mode.size().1 as i32).into(),
         refresh: (mode.vrefresh() * 1000) as i32,
     };
-    let scale = smithay::output::Scale::Fractional(state.config.output_scale);
-    output.change_current_state(Some(output_mode), Some(Transform::Normal), Some(scale), None);
+    let scale_val = output_cfg
+        .and_then(|c| c.scale)
+        .unwrap_or(state.config.output_scale);
+    let scale = smithay::output::Scale::Fractional(scale_val);
+    let transform = output_cfg
+        .and_then(|c| c.transform)
+        .unwrap_or(Transform::Normal);
+    if let Some(cfg) = output_cfg
+        && cfg.position != OutputPosition::Auto
+    {
+        tracing::info!(
+            "Output {connector_name}: position {:?} (will apply in multi-monitor phase)",
+            cfg.position
+        );
+    }
+    output.change_current_state(Some(output_mode), Some(transform), Some(scale), None);
     output.set_preferred(output_mode);
     output.create_global::<DriftWm>(dh);
 

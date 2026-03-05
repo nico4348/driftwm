@@ -14,10 +14,10 @@ use std::collections::HashMap;
 
 use smithay::backend::input::AxisSource;
 use smithay::input::keyboard::{Keysym, ModifiersState};
-use smithay::utils::{Logical, Point};
+use smithay::utils::{Logical, Point, Transform};
 
 use defaults::{default_bindings, default_gesture_bindings, default_mouse_bindings};
-use toml::{ConfigFile, DecorationFileConfig, WindowRuleFile, expand_tilde};
+use toml::{ConfigFile, DecorationFileConfig, OutputRuleFile, WindowRuleFile, expand_tilde};
 
 pub struct Config {
     pub mod_key: ModKey,
@@ -61,6 +61,7 @@ pub struct Config {
     pub decorations: DecorationConfig,
     pub nav_anchors: Vec<Point<f64, Logical>>,
     pub window_rules: Vec<WindowRule>,
+    pub output_configs: Vec<OutputConfig>,
     bindings: HashMap<KeyCombo, Action>,
     pub mouse: ContextBindings<MouseBinding, MouseAction>,
     pub gestures: ContextBindings<GestureBinding, GestureConfigEntry>,
@@ -120,6 +121,13 @@ impl Config {
             trigger: trigger.clone(),
         };
         self.gestures.lookup(&binding, context)
+    }
+
+    /// Find the output config for a given connector name (e.g. "eDP-1").
+    pub fn output_config(&self, connector_name: &str) -> Option<&OutputConfig> {
+        self.output_configs
+            .iter()
+            .find(|c| c.name == connector_name)
     }
 
     /// Parse a TOML string into a Config. Useful for testing and config reload.
@@ -308,6 +316,26 @@ impl Config {
             .map(parse_window_rule)
             .collect();
 
+        let output_configs = {
+            let mut configs: Vec<OutputConfig> = Vec::new();
+            for rule in raw.outputs.unwrap_or_default() {
+                match parse_output_rule(rule) {
+                    Ok(config) => {
+                        if configs.iter().any(|c| c.name == config.name) {
+                            tracing::warn!(
+                                "Duplicate [[outputs]] name '{}', keeping first",
+                                config.name
+                            );
+                        } else {
+                            configs.push(config);
+                        }
+                    }
+                    Err(e) => tracing::warn!("Bad [[outputs]] entry: {e}"),
+                }
+            }
+            configs
+        };
+
         Self {
             mod_key,
             scroll_speed: raw.input.scroll.speed.unwrap_or(1.5),
@@ -342,6 +370,7 @@ impl Config {
                 .collect(),
             autostart: raw.autostart.unwrap_or_default(),
             window_rules,
+            output_configs,
             bindings,
             mouse: mouse_bindings,
             gestures: gesture_bindings,
@@ -435,8 +464,278 @@ fn parse_window_rule(r: WindowRuleFile) -> WindowRule {
     }
 }
 
+fn parse_transform(s: &str) -> Result<Transform, String> {
+    match s {
+        "normal" => Ok(Transform::Normal),
+        "90" => Ok(Transform::_90),
+        "180" => Ok(Transform::_180),
+        "270" => Ok(Transform::_270),
+        "flipped" => Ok(Transform::Flipped),
+        "flipped-90" => Ok(Transform::Flipped90),
+        "flipped-180" => Ok(Transform::Flipped180),
+        "flipped-270" => Ok(Transform::Flipped270),
+        _ => Err(format!("unknown transform '{s}'")),
+    }
+}
+
+fn parse_output_mode(s: &str) -> Result<OutputMode, String> {
+    if s == "preferred" {
+        return Ok(OutputMode::Preferred);
+    }
+    // "WxH" or "WxH@Hz"
+    let (res_part, hz_part) = match s.split_once('@') {
+        Some((res, hz)) => (res, Some(hz)),
+        None => (s, None),
+    };
+    let (w_str, h_str) = res_part
+        .split_once('x')
+        .ok_or_else(|| format!("invalid mode '{s}', expected WxH or WxH@Hz"))?;
+    let w: i32 = w_str
+        .parse()
+        .map_err(|_| format!("invalid width in mode '{s}'"))?;
+    let h: i32 = h_str
+        .parse()
+        .map_err(|_| format!("invalid height in mode '{s}'"))?;
+    match hz_part {
+        Some(hz_str) => {
+            let hz: u32 = hz_str
+                .parse()
+                .map_err(|_| format!("invalid refresh rate in mode '{s}'"))?;
+            Ok(OutputMode::SizeRefresh(w, h, hz))
+        }
+        None => Ok(OutputMode::Size(w, h)),
+    }
+}
+
+fn parse_output_position(val: &::toml::Value) -> Result<OutputPosition, String> {
+    match val {
+        ::toml::Value::String(s) if s == "auto" => Ok(OutputPosition::Auto),
+        ::toml::Value::String(s) => Err(format!("invalid position '{s}', expected \"auto\" or [x, y]")),
+        ::toml::Value::Array(arr) => {
+            if arr.len() != 2 {
+                return Err(format!("position array must have 2 elements, got {}", arr.len()));
+            }
+            let x = arr[0]
+                .as_integer()
+                .ok_or("position[0] must be an integer")? as i32;
+            let y = arr[1]
+                .as_integer()
+                .ok_or("position[1] must be an integer")? as i32;
+            Ok(OutputPosition::Fixed(x, y))
+        }
+        _ => Err("position must be \"auto\" or [x, y]".into()),
+    }
+}
+
+fn parse_output_rule(r: OutputRuleFile) -> Result<OutputConfig, String> {
+    let scale = match r.scale {
+        Some(s) if s <= 0.0 => return Err(format!("scale must be positive, got {s}")),
+        other => other,
+    };
+    let transform = r.transform.map(|s| parse_transform(&s)).transpose()?;
+    let position = r
+        .position
+        .map(|v| parse_output_position(&v))
+        .transpose()?
+        .unwrap_or_default();
+    let mode = r
+        .mode
+        .map(|s| parse_output_mode(&s))
+        .transpose()?
+        .unwrap_or_default();
+    Ok(OutputConfig {
+        name: r.name,
+        scale,
+        transform,
+        position,
+        mode,
+    })
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self::from_raw(ConfigFile::default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_transform_all_variants() {
+        let cases = [
+            ("normal", Transform::Normal),
+            ("90", Transform::_90),
+            ("180", Transform::_180),
+            ("270", Transform::_270),
+            ("flipped", Transform::Flipped),
+            ("flipped-90", Transform::Flipped90),
+            ("flipped-180", Transform::Flipped180),
+            ("flipped-270", Transform::Flipped270),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(parse_transform(input).unwrap(), expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn parse_transform_invalid() {
+        assert!(parse_transform("upside-down").is_err());
+        assert!(parse_transform("").is_err());
+    }
+
+    #[test]
+    fn parse_mode_preferred() {
+        assert_eq!(parse_output_mode("preferred").unwrap(), OutputMode::Preferred);
+    }
+
+    #[test]
+    fn parse_mode_size() {
+        assert_eq!(
+            parse_output_mode("1920x1080").unwrap(),
+            OutputMode::Size(1920, 1080)
+        );
+    }
+
+    #[test]
+    fn parse_mode_size_refresh() {
+        assert_eq!(
+            parse_output_mode("2560x1440@144").unwrap(),
+            OutputMode::SizeRefresh(2560, 1440, 144)
+        );
+    }
+
+    #[test]
+    fn parse_mode_invalid() {
+        assert!(parse_output_mode("big").is_err());
+        assert!(parse_output_mode("1920").is_err());
+        assert!(parse_output_mode("1920x1080@fast").is_err());
+    }
+
+    #[test]
+    fn parse_position_auto() {
+        let val = ::toml::Value::String("auto".into());
+        assert_eq!(parse_output_position(&val).unwrap(), OutputPosition::Auto);
+    }
+
+    #[test]
+    fn parse_position_fixed() {
+        let val = ::toml::Value::Array(vec![
+            ::toml::Value::Integer(100),
+            ::toml::Value::Integer(-200),
+        ]);
+        assert_eq!(
+            parse_output_position(&val).unwrap(),
+            OutputPosition::Fixed(100, -200)
+        );
+    }
+
+    #[test]
+    fn parse_position_invalid_string() {
+        let val = ::toml::Value::String("left".into());
+        assert!(parse_output_position(&val).is_err());
+    }
+
+    #[test]
+    fn parse_position_wrong_array_length() {
+        let val = ::toml::Value::Array(vec![::toml::Value::Integer(1)]);
+        assert!(parse_output_position(&val).is_err());
+    }
+
+    #[test]
+    fn parse_output_rule_negative_scale() {
+        let toml_str = r#"
+            [[outputs]]
+            name = "eDP-1"
+            scale = -1.0
+        "#;
+        let config = Config::from_toml(toml_str).unwrap();
+        assert!(config.output_configs.is_empty());
+    }
+
+    #[test]
+    fn parse_output_rule_zero_scale() {
+        let toml_str = r#"
+            [[outputs]]
+            name = "eDP-1"
+            scale = 0.0
+        "#;
+        let config = Config::from_toml(toml_str).unwrap();
+        assert!(config.output_configs.is_empty());
+    }
+
+    #[test]
+    fn parse_output_rule_valid() {
+        let toml_str = r#"
+            [[outputs]]
+            name = "eDP-1"
+            scale = 1.5
+            transform = "90"
+            mode = "2560x1440@144"
+            position = [1920, 0]
+        "#;
+        let config = Config::from_toml(toml_str).unwrap();
+        assert_eq!(config.output_configs.len(), 1);
+        let oc = &config.output_configs[0];
+        assert_eq!(oc.name, "eDP-1");
+        assert_eq!(oc.scale, Some(1.5));
+        assert_eq!(oc.transform, Some(Transform::_90));
+        assert_eq!(oc.mode, OutputMode::SizeRefresh(2560, 1440, 144));
+        assert_eq!(oc.position, OutputPosition::Fixed(1920, 0));
+    }
+
+    #[test]
+    fn parse_output_rule_defaults() {
+        let toml_str = r#"
+            [[outputs]]
+            name = "HDMI-A-1"
+        "#;
+        let config = Config::from_toml(toml_str).unwrap();
+        assert_eq!(config.output_configs.len(), 1);
+        let oc = &config.output_configs[0];
+        assert_eq!(oc.scale, None);
+        assert_eq!(oc.transform, None);
+        assert_eq!(oc.mode, OutputMode::Preferred);
+        assert_eq!(oc.position, OutputPosition::Auto);
+    }
+
+    #[test]
+    fn duplicate_output_names_keeps_first() {
+        let toml_str = r#"
+            [[outputs]]
+            name = "eDP-1"
+            scale = 1.5
+
+            [[outputs]]
+            name = "eDP-1"
+            scale = 2.0
+        "#;
+        let config = Config::from_toml(toml_str).unwrap();
+        assert_eq!(config.output_configs.len(), 1);
+        assert_eq!(config.output_configs[0].scale, Some(1.5));
+    }
+
+    #[test]
+    fn output_config_lookup() {
+        let toml_str = r#"
+            [[outputs]]
+            name = "eDP-1"
+            scale = 1.5
+
+            [[outputs]]
+            name = "HDMI-A-1"
+            scale = 1.0
+        "#;
+        let config = Config::from_toml(toml_str).unwrap();
+        assert!(config.output_config("eDP-1").is_some());
+        assert!(config.output_config("HDMI-A-1").is_some());
+        assert!(config.output_config("DP-2").is_none());
+    }
+
+    #[test]
+    fn no_outputs_section_produces_empty_vec() {
+        let config = Config::from_toml("").unwrap();
+        assert!(config.output_configs.is_empty());
     }
 }

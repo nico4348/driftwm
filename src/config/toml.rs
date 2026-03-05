@@ -20,6 +20,7 @@ pub(super) struct ConfigFile {
     pub mouse: MouseFileConfig,
     pub gestures: GestureFileConfig,
     pub window_rules: Option<Vec<WindowRuleFile>>,
+    pub outputs: Option<Vec<OutputRuleFile>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -149,6 +150,16 @@ pub(super) struct GestureFileConfig {
     #[serde(rename = "on-canvas")]
     pub on_canvas: Option<HashMap<String, String>>,
     pub anywhere: Option<HashMap<String, String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct OutputRuleFile {
+    pub name: String,
+    pub scale: Option<f64>,
+    pub transform: Option<String>,
+    pub position: Option<::toml::Value>,
+    pub mode: Option<String>,
 }
 
 pub fn config_path() -> std::path::PathBuf {

@@ -201,6 +201,23 @@
 # "4-finger-hold" = "center-window"         # fires on release
 # "mod+3-finger-hold" = "center-window"
 
+# Per-output configuration. Each [[outputs]] entry matches by connector name.
+# Find connector names with wlr-randr or check driftwm logs at startup.
+# Outputs without a matching entry use [output] defaults.
+# Winit backend ignores [[outputs]] entries.
+#
+# [[outputs]]
+# name = "eDP-1"           # connector name (required)
+# scale = 1.5              # fractional scale (default: from [output].scale)
+# transform = "normal"     # normal, 90, 180, 270, flipped, flipped-90, flipped-180, flipped-270
+# position = "auto"        # "auto" (left-to-right) or [x, y] in layout coords
+# mode = "preferred"       # "preferred", "1920x1080", or "2560x1440@144"
+#
+# [[outputs]]
+# name = "HDMI-A-1"
+# scale = 1.0
+# mode = "1920x1080@60"
+
 # Window rules: match windows by app_id and apply behavioral overrides.
 # To find an app's app_id: cat $XDG_RUNTIME_DIR/driftwm/state (see "windows=" line)
 # Supports simple glob: "drift-*" matches any app_id starting with "drift-".
