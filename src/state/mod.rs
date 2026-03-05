@@ -350,6 +350,9 @@ pub struct DriftWm {
     pub focused_output: Option<Output>,
     /// The output a gesture started on (pinned for duration of gesture).
     pub gesture_output: Option<Output>,
+    /// Output names kept as virtual placeholders when all physical outputs disconnect.
+    /// Prevents `active_output().unwrap()` panics by keeping the output in the Space.
+    pub disconnected_outputs: HashSet<String>,
 }
 
 /// Per-client state stored by wayland-server for each connected client.
@@ -486,6 +489,7 @@ impl DriftWm {
             last_animation_tick: Instant::now(),
             focused_output: None,
             gesture_output: None,
+            disconnected_outputs: HashSet::new(),
         }
     }
 

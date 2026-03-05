@@ -413,6 +413,21 @@ pub fn init_udev(
                                     connector_type_name(&connector),
                                     connector.interface_id()
                                 );
+                                // Replace any virtual placeholder outputs. The unmap-to-
+                                // create_surface sequence is synchronous within this
+                                // connector handler, so active_output() is never None.
+                                if !data.state.disconnected_outputs.is_empty() {
+                                    let virtual_outputs: Vec<_> = data.state.space.outputs()
+                                        .filter(|o| data.state.disconnected_outputs.contains(&o.name()))
+                                        .cloned()
+                                        .collect();
+                                    for old in &virtual_outputs {
+                                        data.state.space.unmap_output(old);
+                                        data.state.cached_bg_elements.remove(&old.name());
+                                    }
+                                    data.state.disconnected_outputs.clear();
+                                    data.state.focused_output = None;
+                                }
                                 let saved = crate::state::read_all_per_output_state();
                                 if let Some(sd) = create_surface(
                                     drm,
@@ -438,44 +453,65 @@ pub fn init_udev(
                             DrmScanEvent::Disconnected { crtc: Some(crtc), .. } => {
                                 tracing::info!("Hotplug: CRTC {crtc:?} disconnected");
                                 if let Some(surface) = surfaces.remove(&crtc) {
-                                    data.state.space.unmap_output(&surface.output);
+                                    driftwm::protocols::foreign_toplevel::send_output_leave_all(
+                                        &mut data.state.foreign_toplevel_state,
+                                        &surface.output,
+                                    );
 
-                                    // Cancel any active pointer grab — grabs store an Output
-                                    // clone and would operate on stale state after disconnect.
-                                    if let Some(pointer) = data.state.seat.get_pointer() {
-                                        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-                                        pointer.unset_grab(&mut data.state, serial, 0);
-                                    }
+                                    if surfaces.is_empty() {
+                                        // Last output disconnected — keep it in the Space as
+                                        // a virtual placeholder so active_output() always
+                                        // returns Some. Input events (USB keyboard/mouse) may
+                                        // still arrive; the virtual output retains its old
+                                        // mode/size so position_transformed() works correctly.
+                                        tracing::warn!(
+                                            "Last output disconnected — keeping virtual output '{}'",
+                                            surface.output.name()
+                                        );
+                                        data.state.disconnected_outputs.insert(surface.output.name());
+                                        data.state.exit_fullscreen_on(&surface.output);
+                                        data.state.cached_bg_elements.remove(&surface.output.name());
+                                        data.state.lock_surfaces.remove(&surface.output);
+                                    } else {
+                                        data.state.space.unmap_output(&surface.output);
 
-                                    // Clean up focused_output if it was on the disconnected output
-                                    if data.state.focused_output.as_ref().is_some_and(|fo| fo == &surface.output) {
-                                        data.state.focused_output = data.state.space.outputs().next().cloned();
-                                        if let Some(ref new_out) = data.state.focused_output {
-                                            let (cam, zoom, size) = {
-                                                let os = crate::state::output_state(new_out);
-                                                let sz = new_out.current_mode()
-                                                    .map(|m| m.size.to_logical(1))
-                                                    .unwrap_or((1, 1).into());
-                                                (os.camera, os.zoom, sz)
-                                            };
-                                            let center = smithay::utils::Point::from((
-                                                cam.x + size.w as f64 / (2.0 * zoom),
-                                                cam.y + size.h as f64 / (2.0 * zoom),
-                                            ));
-                                            data.state.warp_pointer(center);
+                                        // Cancel any active pointer grab — grabs store an Output
+                                        // clone and would operate on stale state after disconnect.
+                                        if let Some(pointer) = data.state.seat.get_pointer() {
+                                            let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                                            pointer.unset_grab(&mut data.state, serial, 0);
                                         }
-                                    }
 
-                                    // Clean up gesture state if gesture was on the disconnected output
-                                    if data.state.gesture_output.as_ref().is_some_and(|go| go == &surface.output) {
-                                        data.state.gesture_output = None;
-                                        data.state.gesture_state = None;
-                                    }
+                                        // Clean up focused_output if it was on the disconnected output
+                                        if data.state.focused_output.as_ref().is_some_and(|fo| fo == &surface.output) {
+                                            data.state.focused_output = data.state.space.outputs().next().cloned();
+                                            if let Some(ref new_out) = data.state.focused_output {
+                                                let (cam, zoom, size) = {
+                                                    let os = crate::state::output_state(new_out);
+                                                    let sz = new_out.current_mode()
+                                                        .map(|m| m.size.to_logical(1))
+                                                        .unwrap_or((1, 1).into());
+                                                    (os.camera, os.zoom, sz)
+                                                };
+                                                let center = smithay::utils::Point::from((
+                                                    cam.x + size.w as f64 / (2.0 * zoom),
+                                                    cam.y + size.h as f64 / (2.0 * zoom),
+                                                ));
+                                                data.state.warp_pointer(center);
+                                            }
+                                        }
 
-                                    // Clean up per-output resources
-                                    data.state.cached_bg_elements.remove(&surface.output.name());
-                                    data.state.fullscreen.remove(&surface.output);
-                                    data.state.lock_surfaces.remove(&surface.output);
+                                        // Clean up gesture state if gesture was on the disconnected output
+                                        if data.state.gesture_output.as_ref().is_some_and(|go| go == &surface.output) {
+                                            data.state.gesture_output = None;
+                                            data.state.gesture_state = None;
+                                        }
+
+                                        // Clean up per-output resources
+                                        data.state.cached_bg_elements.remove(&surface.output.name());
+                                        data.state.fullscreen.remove(&surface.output);
+                                        data.state.lock_surfaces.remove(&surface.output);
+                                    }
                                 }
                                 data.state.active_crtcs.remove(&crtc);
                                 data.state.frames_pending.remove(&crtc);

@@ -145,6 +145,31 @@ pub fn send_output_enter_all(
     }
 }
 
+/// Send output_leave for a disconnected output to all existing toplevels.
+pub fn send_output_leave_all(
+    ft_state: &mut ForeignToplevelManagerState,
+    output: &Output,
+) {
+    for data in ft_state.toplevels.values_mut() {
+        for (instance, outputs) in &mut data.instances {
+            if let Some(client) = instance.client() {
+                let client_outputs: Vec<_> = output.client_outputs(&client).collect();
+                outputs.retain(|wl_output| {
+                    if client_outputs.iter().any(|o| o == wl_output) {
+                        instance.output_leave(wl_output);
+                        false
+                    } else {
+                        true
+                    }
+                });
+                if !client_outputs.is_empty() {
+                    instance.done();
+                }
+            }
+        }
+    }
+}
+
 fn refresh_toplevel<D>(
     protocol_state: &mut ForeignToplevelManagerState,
     wl_surface: &WlSurface,
