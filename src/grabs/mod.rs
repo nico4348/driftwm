@@ -117,7 +117,6 @@ mod navigate_grab;
 mod pan_grab;
 mod resize_grab;
 
-pub use driftwm::snap::SnapState;
 pub use move_grab::MoveSurfaceGrab;
 pub use navigate_grab::NavigateGrab;
 pub use pan_grab::PanGrab;

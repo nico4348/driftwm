@@ -58,6 +58,8 @@ pub struct Config {
     pub autostart: Vec<String>,
     pub cursor_theme: Option<String>,
     pub cursor_size: Option<u32>,
+    /// Cursor opacity on non-active outputs (0.0 = hidden, 1.0 = full).
+    pub inactive_cursor_opacity: f64,
     pub decorations: DecorationConfig,
     pub nav_anchors: Vec<Point<f64, Logical>>,
     pub window_rules: Vec<WindowRule>,
@@ -363,6 +365,9 @@ impl Config {
             keyboard_layout,
             cursor_theme: raw.cursor.theme,
             cursor_size: raw.cursor.size,
+            inactive_cursor_opacity: raw.cursor.inactive_opacity
+                .unwrap_or(0.5)
+                .clamp(0.0, 1.0),
             nav_anchors: raw.navigation.anchors
                 .unwrap_or_else(|| vec![[0.0, 0.0]])
                 .into_iter()

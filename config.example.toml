@@ -35,6 +35,7 @@
 [cursor]
 # theme = "Adwaita"           # sets XCURSOR_THEME
 # size = 24                   # sets XCURSOR_SIZE
+# inactive_opacity = 0.5      # cursor opacity on non-active outputs (0.0–1.0)
 
 [navigation]
 # animation_speed = 0.3       # camera lerp factor (higher = faster)
@@ -94,6 +95,7 @@
 #   toggle-fullscreen       — toggle focused window fullscreen
 #   reload-config           — hot-reload config file
 #   quit                    — exit the compositor
+#   send-to-output <dir>    — move focused window to adjacent output
 #   none                    — unbind this key combo
 #
 # Directions: up, down, left, right, up-left, up-right, down-left, down-right
@@ -128,6 +130,10 @@
 # "mod+2" = "go-to -1500 1500"
 # "mod+3" = "go-to 1500 1500"
 # "mod+4" = "go-to 1500 -1500"
+# "mod+alt+up" = "send-to-output up"        # move window to output above
+# "mod+alt+down" = "send-to-output down"
+# "mod+alt+left" = "send-to-output left"
+# "mod+alt+right" = "send-to-output right"
 # "mod+l" = "exec swaylock -f -c 000000 -kl"
 # "mod+ctrl+shift+q" = "quit"
 # "XF86AudioRaiseVolume" = "spawn wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+"

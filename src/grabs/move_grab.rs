@@ -16,6 +16,15 @@ use driftwm::config;
 use driftwm::snap::{SnapRect, SnapParams, SnapState, update_axis};
 use crate::state::{DriftWm, output_state};
 
+/// Which output edge is inhibited after a cross-output teleport.
+#[derive(Clone, Copy)]
+enum Edge {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
 pub struct MoveSurfaceGrab {
     pub start_data: GrabStartData<DriftWm>,
     pub window: Window,
@@ -23,10 +32,27 @@ pub struct MoveSurfaceGrab {
     pub snap: SnapState,
     /// Output this grab is pinned to (uses its camera/zoom throughout).
     pub output: Output,
+    /// After teleport, suppress edge-pan on the entry edge until cursor moves inward.
+    inhibited_edge: Option<Edge>,
 }
 
-
 impl MoveSurfaceGrab {
+    pub fn new(
+        start_data: GrabStartData<DriftWm>,
+        window: Window,
+        initial_window_location: Point<i32, Logical>,
+        output: Output,
+    ) -> Self {
+        Self {
+            start_data,
+            window,
+            initial_window_location,
+            snap: SnapState::default(),
+            output,
+            inhibited_edge: None,
+        }
+    }
+
     /// Compute edge-pan velocity based on how deep the cursor is into the edge zone.
     /// Deeper = faster (like a joystick). Returns None when cursor is outside the zone.
     pub(crate) fn edge_pan_velocity(
@@ -69,6 +95,73 @@ impl MoveSurfaceGrab {
 
         Some(Point::from((vx, vy)))
     }
+
+    /// Determine the entry edge: the old output's layout center relative to the
+    /// new output tells us which side the cursor entered from.
+    fn entry_edge(old_output: &Output, new_output: &Output) -> Edge {
+        let old_os = output_state(old_output);
+        let old_lp = old_os.layout_position;
+        drop(old_os);
+        let old_size = old_output
+            .current_mode()
+            .map(|m| m.size.to_logical(1))
+            .unwrap_or((1, 1).into());
+        let old_cx = old_lp.x as f64 + old_size.w as f64 / 2.0;
+        let old_cy = old_lp.y as f64 + old_size.h as f64 / 2.0;
+
+        let new_os = output_state(new_output);
+        let new_lp = new_os.layout_position;
+        drop(new_os);
+        let new_size = new_output
+            .current_mode()
+            .map(|m| m.size.to_logical(1))
+            .unwrap_or((1, 1).into());
+        let new_cx = new_lp.x as f64 + new_size.w as f64 / 2.0;
+        let new_cy = new_lp.y as f64 + new_size.h as f64 / 2.0;
+
+        let dx = old_cx - new_cx;
+        let dy = old_cy - new_cy;
+
+        // The entry edge is the side of the new output facing the old output.
+        if dx.abs() >= dy.abs() {
+            if dx > 0.0 { Edge::Right } else { Edge::Left }
+        } else if dy > 0.0 {
+            Edge::Bottom
+        } else {
+            Edge::Top
+        }
+    }
+
+    /// Check if the cursor has moved far enough from the inhibited edge to clear it.
+    fn should_clear_inhibition(
+        edge: Edge,
+        screen_pos: Point<f64, Logical>,
+        output_w: f64,
+        output_h: f64,
+        edge_zone: f64,
+    ) -> bool {
+        match edge {
+            Edge::Left => screen_pos.x >= edge_zone,
+            Edge::Right => (output_w - screen_pos.x) >= edge_zone,
+            Edge::Top => screen_pos.y >= edge_zone,
+            Edge::Bottom => (output_h - screen_pos.y) >= edge_zone,
+        }
+    }
+
+    /// Zero out the velocity component for the inhibited edge, keeping others.
+    fn suppress_inhibited_edge(
+        edge: Edge,
+        velocity: Option<Point<f64, Logical>>,
+    ) -> Option<Point<f64, Logical>> {
+        let mut v = velocity?;
+        match edge {
+            Edge::Left => { if v.x < 0.0 { v.x = 0.0; } }
+            Edge::Right => { if v.x > 0.0 { v.x = 0.0; } }
+            Edge::Top => { if v.y < 0.0 { v.y = 0.0; } }
+            Edge::Bottom => { if v.y > 0.0 { v.y = 0.0; } }
+        }
+        if v.x == 0.0 && v.y == 0.0 { None } else { Some(v) }
+    }
 }
 
 impl PointerGrab<DriftWm> for MoveSurfaceGrab {
@@ -79,7 +172,52 @@ impl PointerGrab<DriftWm> for MoveSurfaceGrab {
         _focus: Option<(<DriftWm as SeatHandler>::PointerFocus, Point<f64, Logical>)>,
         event: &MotionEvent,
     ) {
-        // Natural position from unmodified cursor delta
+        // Phase 3 input routing already converted event.location to the focused
+        // output's canvas space and updated data.focused_output. If that differs
+        // from self.output, the pointer crossed an output boundary.
+        if data.focused_output.as_ref().is_some_and(|fo| *fo != self.output) {
+            let new_output = data.focused_output.clone().unwrap();
+
+            // event.location is already in the new output's canvas space.
+            let old_zoom = output_state(&self.output).zoom;
+            let new_zoom = output_state(&new_output).zoom;
+
+            // Preserve screen-space offset between cursor and window.
+            let canvas_offset: Point<f64, Logical> = Point::from((
+                self.initial_window_location.x as f64 - self.start_data.location.x,
+                self.initial_window_location.y as f64 - self.start_data.location.y,
+            ));
+            let zoom_ratio = old_zoom / new_zoom;
+            let new_canvas_offset: Point<f64, Logical> = Point::from((
+                canvas_offset.x * zoom_ratio,
+                canvas_offset.y * zoom_ratio,
+            ));
+
+            let entry_edge = Self::entry_edge(&self.output, &new_output);
+
+            // Clear edge-pan on the old output before switching.
+            output_state(&self.output).edge_pan_velocity = None;
+
+            self.start_data.location = event.location;
+            self.initial_window_location = Point::from((
+                (event.location.x + new_canvas_offset.x) as i32,
+                (event.location.y + new_canvas_offset.y) as i32,
+            ));
+            self.output = new_output;
+            self.snap = SnapState::default();
+            self.inhibited_edge = Some(entry_edge);
+
+            // Map window at new position immediately.
+            data.space.map_element(
+                self.window.clone(),
+                self.initial_window_location,
+                false,
+            );
+            handle.motion(data, None, event);
+            return;
+        }
+
+        // Normal case — event.location is in self.output's canvas space.
         let delta = event.location - self.start_data.location;
         let natural_x = self.initial_window_location.x as f64 + delta.x;
         let natural_y = self.initial_window_location.y as f64 + delta.y;
@@ -87,7 +225,7 @@ impl PointerGrab<DriftWm> for MoveSurfaceGrab {
         let (final_x, final_y) = if !data.config.snap_enabled {
             (natural_x, natural_y)
         } else {
-            let zoom = data.zoom();
+            let zoom = output_state(&self.output).zoom;
             let effective_distance = data.config.snap_distance / zoom;
             let effective_break = data.config.snap_break_force / zoom;
             let gap = data.config.snap_gap;
@@ -168,7 +306,7 @@ impl PointerGrab<DriftWm> for MoveSurfaceGrab {
         data.space.map_element(self.window.clone(), new_loc, false);
         handle.motion(data, None, event);
 
-        // Edge auto-pan detection using pinned output
+        // Edge auto-pan detection using pinned output.
         let (camera, zoom) = {
             let os = output_state(&self.output);
             (os.camera, os.zoom)
@@ -180,14 +318,29 @@ impl PointerGrab<DriftWm> for MoveSurfaceGrab {
 
         if let Some(size) = output_size {
             let cfg = &data.config;
-            data.set_edge_pan_velocity(Self::edge_pan_velocity(
+            let velocity = Self::edge_pan_velocity(
                 screen_pos,
                 size.w as f64,
                 size.h as f64,
                 cfg.edge_zone,
                 cfg.edge_pan_min,
                 cfg.edge_pan_max,
-            ));
+            );
+
+            let effective_velocity = if let Some(edge) = self.inhibited_edge {
+                if Self::should_clear_inhibition(
+                    edge, screen_pos, size.w as f64, size.h as f64, cfg.edge_zone,
+                ) {
+                    self.inhibited_edge = None;
+                    velocity
+                } else {
+                    Self::suppress_inhibited_edge(edge, velocity)
+                }
+            } else {
+                velocity
+            };
+
+            output_state(&self.output).edge_pan_velocity = effective_velocity;
         }
     }
 
@@ -199,15 +352,14 @@ impl PointerGrab<DriftWm> for MoveSurfaceGrab {
     ) {
         handle.button(data, event);
         if handle.current_pressed().is_empty() {
-            data.set_edge_pan_velocity(None);
+            output_state(&self.output).edge_pan_velocity = None;
             handle.unset_grab(self, data, event.serial, event.time, true);
         }
     }
 
-    fn unset(&mut self, data: &mut DriftWm) {
-        data.set_edge_pan_velocity(None);
+    fn unset(&mut self, _data: &mut DriftWm) {
+        output_state(&self.output).edge_pan_velocity = None;
     }
 
     crate::grabs::forward_pointer_grab_methods!();
 }
-

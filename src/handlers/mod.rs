@@ -318,6 +318,10 @@ impl ForeignToplevelHandler for DriftWm {
         &mut self.foreign_toplevel_state
     }
 
+    fn foreign_toplevel_outputs(&self) -> Vec<smithay::output::Output> {
+        self.space.outputs().cloned().collect()
+    }
+
     fn activate(&mut self, wl_surface: WlSurface) {
         if driftwm::config::applied_rule(&wl_surface).is_some_and(|r| r.no_focus) {
             return;
@@ -355,12 +359,8 @@ impl ForeignToplevelHandler for DriftWm {
     }
 
     fn unset_fullscreen(&mut self, wl_surface: WlSurface) {
-        let is_fullscreen = self
-            .fullscreen
-            .as_ref()
-            .is_some_and(|fs| fs.window.toplevel().unwrap().wl_surface() == &wl_surface);
-        if is_fullscreen {
-            self.exit_fullscreen();
+        if let Some(output) = self.find_fullscreen_output_for_surface(&wl_surface) {
+            self.exit_fullscreen_on(&output);
         }
     }
 }
@@ -398,14 +398,15 @@ impl SessionLockHandler for DriftWm {
 
         // Kill all transient input/animation state so nothing fires during lock
         self.gesture_state = None;
-        self.with_output_state(|os| {
+        for output in self.space.outputs().cloned().collect::<Vec<_>>() {
+            let mut os = crate::state::output_state(&output);
             os.momentum.stop();
             os.edge_pan_velocity = None;
             os.panning = false;
             os.camera_target = None;
             os.zoom_target = None;
             os.zoom_animation_center = None;
-        });
+        }
         self.held_action = None;
         self.grab_cursor = false;
         if let Some(pending) = self.pending_middle_click.take() {
@@ -428,7 +429,7 @@ impl SessionLockHandler for DriftWm {
     fn unlock(&mut self) {
         tracing::info!("Session unlocked");
         self.session_lock = SessionLock::Unlocked;
-        self.lock_surface = None;
+        self.lock_surfaces.clear();
         // Restore focus to the most recent window
         if let Some(window) = self.focus_history.first().cloned() {
             let serial = smithay::utils::SERIAL_COUNTER.next_serial();
@@ -439,14 +440,20 @@ impl SessionLockHandler for DriftWm {
         self.mark_all_dirty();
     }
 
-    fn new_surface(&mut self, surface: LockSurface, _output: WlOutput) {
-        // Configure lock surface to fill the output
-        let output_size = self.get_viewport_size();
+    fn new_surface(&mut self, surface: LockSurface, wl_output: WlOutput) {
+        let output = smithay::output::Output::from_resource(&wl_output)
+            .or_else(|| self.active_output());
+        let Some(output) = output else { return };
+
+        let output_size = output.current_mode()
+            .map(|m| m.size.to_logical(1))
+            .unwrap_or((1, 1).into());
+
         surface.with_pending_state(|state| {
             state.size = Some((output_size.w as u32, output_size.h as u32).into());
         });
         surface.send_configure();
-        self.lock_surface = Some(surface);
+        self.lock_surfaces.insert(output, surface);
     }
 
 }

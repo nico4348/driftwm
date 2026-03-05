@@ -64,6 +64,7 @@ pub(super) struct ScrollConfig {
 pub(super) struct CursorConfig {
     pub theme: Option<String>,
     pub size: Option<u32>,
+    pub inactive_opacity: Option<f64>,
 }
 
 #[derive(Deserialize, Default)]

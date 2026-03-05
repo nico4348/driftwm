@@ -66,7 +66,7 @@ pub fn init_winit(
 
     {
         let mut backend = data.state.backend.take().unwrap();
-        crate::render::init_background(&mut data.state, backend.renderer(), size.to_logical(1));
+        crate::render::init_background(&mut data.state, backend.renderer(), size.to_logical(1), "winit");
         data.state.shadow_shader = crate::render::compile_shadow_shader(backend.renderer());
         data.state.backend = Some(backend);
     }
@@ -172,7 +172,7 @@ pub fn init_winit(
             };
 
             // --- Build cursor + compose frame ---
-            let cursor_elements = build_cursor_elements(&mut data.state, backend.renderer(), cur_camera, cur_zoom);
+            let cursor_elements = build_cursor_elements(&mut data.state, backend.renderer(), cur_camera, cur_zoom, 1.0);
             let mut age = backend.buffer_age().unwrap_or(0);
             if data.state.background_tile.is_some() && (camera_moved || zoom_changed) {
                 age = 0;
@@ -215,6 +215,7 @@ pub fn init_winit(
             data.state.backend = Some(Backend::Winit(backend));
 
             // --- Post-render ---
+            crate::render::refresh_foreign_toplevels(&mut data.state);
             crate::render::post_render(&mut data.state, &output);
             log_err("flush_clients", data.display.flush_clients());
 

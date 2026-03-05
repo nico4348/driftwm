@@ -38,6 +38,7 @@ shader_path = "~/.config/driftwm/pink_cloud.glsl"
 "XF86MonBrightnessUp" = "spawn swayosd-client --brightness raise"
 "XF86MonBrightnessDown" = "spawn swayosd-client --brightness lower"
 
+
 # Dashboard widgets — positioned around origin for home view (1920x1080)
 
 [[window_rules]]

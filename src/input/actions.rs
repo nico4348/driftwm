@@ -5,15 +5,15 @@ use smithay::{
 
 use driftwm::canvas::{self};
 use driftwm::config::Action;
-use crate::state::{DriftWm, HomeReturn};
+use crate::state::{DriftWm, FocusTarget, HomeReturn};
 
 impl DriftWm {
     pub fn execute_action(&mut self, action: &Action) {
         // Snapshot fullscreen window before the guard exits it
-        let was_fullscreen = self.fullscreen.as_ref().map(|fs| fs.window.clone());
+        let was_fullscreen = self.active_fullscreen().map(|fs| fs.window.clone());
 
         // Any action except ToggleFullscreen exits fullscreen first
-        if self.fullscreen.is_some() && !matches!(action, Action::ToggleFullscreen) {
+        if self.is_fullscreen() && !matches!(action, Action::ToggleFullscreen) {
             self.exit_fullscreen();
         }
 
@@ -260,7 +260,8 @@ impl DriftWm {
 
                 if at_home {
                     // We're at home — return to saved position
-                    if let Some(ret) = self.home_return.take() {
+                    let ret = self.with_output_state(|os| os.home_return.take());
+                    if let Some(ret) = ret {
                         let can_fullscreen = ret.fullscreen_window.as_ref()
                             .is_some_and(|w| self.space.elements().any(|e| e == w));
                         if can_fullscreen {
@@ -280,10 +281,12 @@ impl DriftWm {
                     }
                 } else {
                     // Not at home — save current position+zoom and go home at zoom=1.0
-                    self.home_return = Some(HomeReturn {
-                        camera,
-                        zoom,
-                        fullscreen_window: was_fullscreen,
+                    self.with_output_state(|os| {
+                        os.home_return = Some(HomeReturn {
+                            camera,
+                            zoom,
+                            fullscreen_window: was_fullscreen.clone(),
+                        });
                     });
                     self.set_overview_return(None);
                     let home = Point::from((
@@ -362,7 +365,7 @@ impl DriftWm {
                 }
             }
             Action::ToggleFullscreen => {
-                if self.fullscreen.is_some() {
+                if self.is_fullscreen() {
                     self.exit_fullscreen();
                 } else {
                     let keyboard = self.seat.get_keyboard().unwrap();
@@ -375,6 +378,49 @@ impl DriftWm {
                         if let Some(window) = window {
                             self.enter_fullscreen(&window);
                         }
+                    }
+                }
+            }
+            Action::SendToOutput(dir) => {
+                let keyboard = self.seat.get_keyboard().unwrap();
+                if let Some(focus) = keyboard.current_focus() {
+                    if driftwm::config::applied_rule(&focus.0).is_some_and(|r| r.widget) {
+                        return;
+                    }
+                    let window = self
+                        .space
+                        .elements()
+                        .find(|w| w.toplevel().unwrap().wl_surface() == &focus.0)
+                        .cloned();
+                    if let Some(window) = window
+                        && let Some(from_output) = self.output_for_window(&window)
+                        && let Some(target_output) = self.output_in_direction(&from_output, dir)
+                    {
+                        // Compute target output's viewport center in canvas coords
+                        let (target_cam, target_zoom, target_size) = {
+                            let os = crate::state::output_state(&target_output);
+                            let sz = target_output.current_mode()
+                                .map(|m| m.size.to_logical(1))
+                                .unwrap_or((1, 1).into());
+                            (os.camera, os.zoom, sz)
+                        };
+                        let center_x = target_cam.x + target_size.w as f64 / (2.0 * target_zoom);
+                        let center_y = target_cam.y + target_size.h as f64 / (2.0 * target_zoom);
+                        let geo = window.geometry();
+                        let new_loc = Point::from((
+                            (center_x - geo.size.w as f64 / 2.0) as i32,
+                            (center_y - geo.size.h as f64 / 2.0) as i32,
+                        ));
+                        self.space.map_element(window.clone(), new_loc, true);
+                        self.space.raise_element(&window, true);
+                        self.enforce_below_windows();
+                        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                        let keyboard = self.seat.get_keyboard().unwrap();
+                        keyboard.set_focus(
+                            self,
+                            Some(FocusTarget(window.toplevel().unwrap().wl_surface().clone())),
+                            serial,
+                        );
                     }
                 }
             }

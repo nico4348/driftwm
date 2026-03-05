@@ -19,7 +19,7 @@ use smithay::{
 use driftwm::canvas::{self, CanvasPos, canvas_to_screen};
 use driftwm::config::{self, BindingContext, MouseAction};
 use crate::decorations::DecorationHit;
-use crate::grabs::{MoveSurfaceGrab, NavigateGrab, PanGrab, ResizeState, ResizeSurfaceGrab, SnapState};
+use crate::grabs::{MoveSurfaceGrab, NavigateGrab, PanGrab, ResizeState, ResizeSurfaceGrab};
 use crate::state::{DriftWm, FocusTarget, PendingMiddleClick};
 
 impl DriftWm {
@@ -97,7 +97,7 @@ impl DriftWm {
             // During fullscreen: bound clicks exit fullscreen first and
             // proceed to compositor grabs; plain clicks forward to the app.
             // ToggleFullscreen is special — exiting IS the action, so return immediately.
-            if self.fullscreen.is_some() {
+            if self.is_fullscreen() {
                 // In fullscreen the window fills the screen — treat as OnWindow
                 let fs_lookup = self.config.mouse_button_lookup_ctx(&mods, button, BindingContext::OnWindow);
                 if matches!(fs_lookup, Some(MouseAction::ToggleFullscreen)) {
@@ -162,13 +162,12 @@ impl DriftWm {
                                 button,
                                 location: pos,
                             };
-                            let grab = MoveSurfaceGrab {
+                            let grab = MoveSurfaceGrab::new(
                                 start_data,
                                 window,
                                 initial_window_location,
-                                snap: SnapState::default(),
-                                output: self.active_output().unwrap(),
-                            };
+                                self.active_output().unwrap(),
+                            );
                             pointer.set_grab(self, grab, serial, Focus::Clear);
                             return;
                         }
@@ -218,13 +217,12 @@ impl DriftWm {
                                     button,
                                     location: pos,
                                 };
-                                let grab = MoveSurfaceGrab {
+                                let grab = MoveSurfaceGrab::new(
                                     start_data,
                                     window,
                                     initial_window_location,
-                                    snap: SnapState::default(),
-                                    output: self.active_output().unwrap(),
-                                };
+                                    self.active_output().unwrap(),
+                                );
                                 pointer.set_grab(self, grab, serial, Focus::Clear);
                                 return;
                             }
@@ -378,6 +376,7 @@ impl DriftWm {
             button,
             location: pos,
         };
+        let output = self.active_output().unwrap();
         let grab = ResizeSurfaceGrab {
             start_data,
             window: window.clone(),
@@ -385,6 +384,7 @@ impl DriftWm {
             initial_window_location,
             initial_window_size,
             last_window_size: initial_window_size,
+            output,
         };
         pointer.set_grab(self, grab, serial, Focus::Clear);
     }
@@ -406,7 +406,7 @@ impl DriftWm {
         let source = event.source();
 
         // During fullscreen: bound scroll exits fullscreen first; plain scroll forwards.
-        if self.fullscreen.is_some() {
+        if self.is_fullscreen() {
             if self.config.mouse_scroll_lookup_ctx(&mods, source, BindingContext::OnWindow).is_some() {
                 self.exit_fullscreen_remap_pointer(pos);
                 // Fall through to dispatch below

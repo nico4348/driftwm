@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 
-use crate::grabs::{MoveSurfaceGrab, ResizeState, ResizeSurfaceGrab, SnapState};
-use crate::state::{DriftWm, FocusTarget};
+use crate::grabs::{MoveSurfaceGrab, ResizeState, ResizeSurfaceGrab};
+use crate::state::{DriftWm, FocusTarget, output_state};
 use smithay::{
     delegate_xdg_shell,
     desktop::{
@@ -131,11 +131,8 @@ impl XdgShellHandler for DriftWm {
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
-        let is_fullscreen = self.fullscreen.as_ref().is_some_and(|fs| {
-            fs.window.toplevel().unwrap().wl_surface() == surface.wl_surface()
-        });
-        if is_fullscreen {
-            self.exit_fullscreen();
+        if let Some(output) = self.find_fullscreen_output_for_surface(surface.wl_surface()) {
+            self.exit_fullscreen_on(&output);
         }
     }
 
@@ -164,10 +161,14 @@ impl XdgShellHandler for DriftWm {
                 );
             }
             // If the destroyed window was fullscreen, restore viewport
-            if self.fullscreen.as_ref().is_some_and(|fs| &fs.window == window) {
-                let fs = self.fullscreen.take().unwrap();
-                self.set_camera(fs.saved_camera);
-                self.set_zoom(fs.saved_zoom);
+            let fs_output = self.fullscreen.iter()
+                .find(|(_, fs)| &fs.window == window)
+                .map(|(o, _)| o.clone());
+            if let Some(output) = fs_output {
+                let fs = self.fullscreen.remove(&output).unwrap();
+                // Set camera/zoom on the specific output
+                output_state(&output).camera = fs.saved_camera;
+                output_state(&output).zoom = fs.saved_zoom;
                 self.update_output_from_camera();
             }
             // Remove from focus history before unmapping
@@ -209,13 +210,12 @@ impl XdgShellHandler for DriftWm {
         };
 
         let initial_window_location = self.space.element_location(&window).unwrap();
-        let grab = MoveSurfaceGrab {
+        let grab = MoveSurfaceGrab::new(
             start_data,
             window,
             initial_window_location,
-            snap: SnapState::default(),
-            output: self.active_output().unwrap(),
-        };
+            self.active_output().unwrap(),
+        );
         pointer.set_grab(self, grab, serial, Focus::Clear);
     }
 
@@ -266,6 +266,7 @@ impl XdgShellHandler for DriftWm {
         self.grab_cursor = true;
         self.cursor_status = CursorImageStatus::Named(resize_cursor(edges));
 
+        let output = self.active_output().unwrap();
         let grab = ResizeSurfaceGrab {
             start_data,
             window,
@@ -273,6 +274,7 @@ impl XdgShellHandler for DriftWm {
             initial_window_location,
             initial_window_size,
             last_window_size: initial_window_size,
+            output,
         };
         pointer.set_grab(self, grab, serial, Focus::Clear);
     }

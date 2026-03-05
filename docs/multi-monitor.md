@@ -32,9 +32,10 @@ on the `Output` object):
 - overview_return, camera_target
 - last_scroll_pan, momentum, panning, edge_pan_velocity
 - frame_counter, last_frame_instant, last_rendered_camera
-- cached_bg_element
-- fullscreen
-- lock_surface
+- layout_position, home_return
+- cached_bg_element (keyed by output name on DriftWm)
+- fullscreen (keyed by Output on DriftWm)
+- lock_surface (keyed by Output on DriftWm)
 
 Everything else is global: space, seat, config, focus_history, decorations,
 protocol states, gesture state, cursor state.
@@ -46,25 +47,16 @@ of monitor A and it appears on the left edge of monitor B. The cursor's canvas
 position changes discontinuously because the two viewports are looking at
 different canvas areas. This is expected.
 
-### Edge zone as monitor boundary
-
-The existing edge-pan zone (configurable, default 100px) doubles as a sticky
-boundary between adjacent monitors:
-
-- **Slow movement into edge zone** → triggers edge-pan as usual (viewport
-  scrolls in that direction)
-- **Fast movement through edge zone** → breaks through to adjacent monitor (if
-  one exists at that edge)
-
-Velocity threshold determines which behavior fires. If no adjacent monitor
-exists at that edge, always edge-pan regardless of speed.
+Pointer crossing is free — no sticky boundary. The cursor crosses between
+monitors immediately on reaching the edge.
 
 ### Dragging windows between monitors
 
-When dragging a window and the cursor crosses to another monitor, the window's
-canvas position is adjusted to stay under the cursor relative to the new
-viewport's canvas space. This is an intentional canvas-space teleport — the user
-is explicitly moving a window between viewports.
+When dragging a window (`MoveSurfaceGrab`) and the cursor crosses to another
+monitor, the window's canvas position is adjusted to stay under the cursor
+relative to the new viewport's canvas space. A configurable velocity threshold
+prevents accidental crossings during slow drags near edges — slow movement
+clamps at the boundary, fast movement breaks through.
 
 When both monitors are viewing the same (or overlapping) canvas area, window
 drags cross seamlessly with no repositioning needed — the window is already
@@ -72,6 +64,16 @@ visible on both screens.
 
 For normal cursor movement (no drag), no window repositioning. The cursor
 crosses in screen space, the canvas position jumps, that's it.
+
+### Sending windows to another output
+
+Two mechanisms:
+
+- **Drag velocity**: during `MoveSurfaceGrab`, fast cursor movement across
+  output boundary teleports the window to the new viewport's canvas space.
+- **`SendToOutput` action** (default: `Mod+Alt+Arrow`): moves the focused
+  window's canvas position to the center of the target output's viewport.
+  Target output is determined by arrow direction in layout space.
 
 ## Output configuration
 
@@ -99,12 +101,18 @@ and CLI tools (wlr-randr) to read and modify output configuration at runtime.
 - `home-toggle` returns the active output to origin / zoom 1.0
 - Layer shell surfaces bind to a specific output (protocol includes output
   selection). If no output specified, use the active output.
-- Foreign toplevel activation pans the output closest to the target window
+- Foreign toplevel: activation pans the active output (where the user clicked
+  the taskbar) to the target window
 
 ## State file
 
-Save/restore per-output camera/zoom keyed by output name. Fall back to origin
-for newly connected outputs.
+State file has two layers:
+
+- **Flat keys** (`x`, `y`, `zoom`, `saved_x`, etc.) — always reflect the active
+  output's viewport. Updated on every write. Widgets read these without needing
+  to know about multiple outputs.
+- **Per-output keys** (`outputs.eDP-1.camera_x`, etc.) — used for save/restore
+  on reconnect. Fall back to origin for newly connected outputs.
 
 ## Screencopy / session lock
 
@@ -170,11 +178,8 @@ The pointer moves across outputs. Determine which output it's on.
 - Update `gestures.rs` → momentum/pan affects active output only
 - Update `grabs/move_grab.rs` → edge detection uses active output size
 
-**Edge-zone monitor boundaries**: The existing edge-pan zone doubles as a sticky
-boundary between adjacent monitors. Slow movement triggers edge-pan, fast
-movement breaks through to the adjacent monitor. Add a velocity threshold. When
-dragging a window across the boundary, adjust the window's canvas position to
-stay under the cursor relative to the new viewport's canvas space.
+**Pointer crossing**: Free — no sticky boundary for normal pointer movement.
+The cursor crosses between monitors immediately on reaching the edge.
 
 ### Phase 4: Multiple output creation (udev backend)
 
@@ -190,17 +195,54 @@ Currently `udev.rs` creates one output on the first connected connector. Extend:
 - Initialize `OutputState` for each new output (camera at center of output's
   viewport region, or at origin for the primary)
 
-### Phase 5: Hotplug
+### Phase 5: Hotplug + Window placement & navigation
 
-Extend existing hotplug handling:
+Combines hotplug handling with all multi-output-aware behavior updates.
+
+**Hotplug**:
 
 - Monitor connected → create output, apply config, add to space, initialize
   `OutputState`, trigger render
-- Monitor disconnected → remove output from space, clean up `OutputState`, if
-  pointer was on it move pointer to nearest output
+- Monitor disconnected → already handled in Phase 4 (focused_output,
+  gesture_output, grab cleanup, pointer warp)
 - VT switch (suspend/resume) → re-enumerate connectors, reconcile
 
-### Phase 6: wlr-output-management protocol
+**Window placement & navigation**:
+
+- New windows open at center of **active output's** viewport
+- `center-nearest` direction search uses active output's viewport
+- `zoom-to-fit` fits all windows within active output's viewport
+- `home-toggle` returns active output to origin / zoom 1.0
+- Layer shell: respect output selection from protocol, fall back to active output
+- Foreign toplevel: activation pans the **active output** (where the user
+  clicked the taskbar) to the target window
+- State file: save/restore per-output camera/zoom keyed by output name
+
+**Cross-output window movement**:
+
+- `MoveSurfaceGrab`: when cursor crosses output boundary with sufficient
+  velocity, teleport the window's canvas position to stay under the cursor in
+  the new viewport's canvas space. Configurable velocity threshold prevents
+  accidental crossings during slow drags.
+- `SendToOutput` action (default: `Mod+Alt+Arrow`): moves focused window to
+  the center of the target output's viewport. Target output determined by arrow
+  direction in layout space.
+
+### Phase 6: Last-output-disconnect safety
+
+`active_output().unwrap()` is called throughout the codebase. If all monitors
+disconnect (desktop user unplugs only display, docking station disconnect),
+the compositor panics.
+
+Fix: guard at the edge — never unmap the last output. When the last DRM
+surface is lost, keep the `Output` in the space as a virtual/disconnected
+output. Renders are no-ops (no DRM surface to submit to), but all code that
+calls `active_output()` continues to work. When a monitor reconnects, the
+virtual output is replaced by the real one.
+
+This is what niri and sway do (keep a "disconnected" output around).
+
+### Phase 7: wlr-output-management protocol
 
 Implement `zwlr-output-management-unstable-v1`:
 
@@ -209,37 +251,6 @@ Implement `zwlr-output-management-unstable-v1`:
 - Handle configuration requests (apply, test)
 - Send configuration events on hotplug changes
 - Check niri's implementation for reference
-
-### Phase 7: Window placement and navigation updates
-
-- New windows open at center of **active output's** viewport
-- `center-nearest` direction search uses active output's viewport
-- `zoom-to-fit` fits all windows within active output's viewport
-- `home-toggle` returns active output to origin / zoom 1.0
-- Layer shell: respect output selection from protocol, fall back to active output
-- Foreign toplevel: activation pans the output closest to target window
-- State file: save/restore per-output camera/zoom keyed by output name
-
-### Files modified
-
-- `src/state/mod.rs` — `OutputState` struct, extraction, accessors
-- `src/state/animation.rs` — per-output animation ticks
-- `src/state/navigation.rs` — active output awareness
-- `src/state/fullscreen.rs` — per-output fullscreen
-- `src/render.rs` — per-output camera/zoom in compose_frame
-- `src/input/mod.rs` — pointer routing, output detection
-- `src/input/pointer.rs` — active output for context
-- `src/input/gestures.rs` — momentum/pan target active output
-- `src/grabs/move_grab.rs` — edge detection per output
-- `src/backend/udev.rs` — multi-connector, output config, hotplug
-- `src/handlers/layer_shell.rs` — output selection
-- `src/handlers/xdg_shell.rs` — window placement on active output
-- `src/handlers/compositor.rs` — window centering on active output
-- `src/handlers/mod.rs` — wlr-output-management delegates
-- `src/config/mod.rs` — output config parsing
-- `src/config/toml.rs` — `[[output]]` serde
-- `src/config/types.rs` — OutputConfig type
-- `config.example.toml` — output configuration docs
 
 ### Verification
 
@@ -254,4 +265,6 @@ After Phase 4+:
 6. Pan/zoom on one monitor doesn't affect the other
 7. Pointer moves between monitors
 8. New windows open on the monitor with pointer focus
-9. `wdisplays` can see and rearrange outputs (after Phase 6)
+9. Drag window between monitors with fast movement
+10. `Mod+Alt+Arrow` sends window to adjacent output
+11. `wdisplays` can see and rearrange outputs (after Phase 6)

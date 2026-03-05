@@ -23,7 +23,7 @@ pub(super) fn default_bindings(mod_key: ModKey, cycle_mod: CycleModifier) -> Has
         ..cyc.clone()
     };
 
-    HashMap::from([
+    let mut bindings = HashMap::from([
         (
             KeyCombo {
                 modifiers: m.clone(),
@@ -269,7 +269,36 @@ pub(super) fn default_bindings(mod_key: ModKey, cycle_mod: CycleModifier) -> Has
             KeyCombo { modifiers: m.clone(), sym: Keysym::from(keysyms::KEY_l) },
             Action::Exec("swaylock -f -c 000000 -kl".into()),
         ),
-    ])
+    ]);
+
+    // Send-to-output bindings (Mod+Alt+Arrow) — only for Super mod_key
+    // to avoid conflict with Alt-based bindings
+    if mod_key == ModKey::Super {
+        let m_alt = Modifiers {
+            alt: true,
+            ..m.clone()
+        };
+        bindings.extend([
+            (
+                KeyCombo { modifiers: m_alt.clone(), sym: Keysym::from(keysyms::KEY_Up) },
+                Action::SendToOutput(Direction::Up),
+            ),
+            (
+                KeyCombo { modifiers: m_alt.clone(), sym: Keysym::from(keysyms::KEY_Down) },
+                Action::SendToOutput(Direction::Down),
+            ),
+            (
+                KeyCombo { modifiers: m_alt.clone(), sym: Keysym::from(keysyms::KEY_Left) },
+                Action::SendToOutput(Direction::Left),
+            ),
+            (
+                KeyCombo { modifiers: m_alt, sym: Keysym::from(keysyms::KEY_Right) },
+                Action::SendToOutput(Direction::Right),
+            ),
+        ]);
+    }
+
+    bindings
 }
 
 pub(super) fn default_mouse_bindings(mod_key: ModKey) -> ContextBindings<MouseBinding, MouseAction> {

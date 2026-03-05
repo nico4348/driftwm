@@ -19,7 +19,7 @@ use smithay::{
     wayland::compositor::with_states,
 };
 
-use crate::grabs::{MoveSurfaceGrab, ResizeState, SnapState, has_bottom, has_left, has_right, has_top};
+use crate::grabs::{MoveSurfaceGrab, ResizeState, has_bottom, has_left, has_right, has_top};
 use crate::state::{DriftWm, FocusTarget};
 use driftwm::canvas::{self, CanvasPos, canvas_to_screen};
 use driftwm::config::{
@@ -90,7 +90,7 @@ impl DriftWm {
         let time = Event::time_msec(&event);
 
         // During fullscreen: 3+ finger gestures exit fullscreen first
-        if self.fullscreen.is_some() && fingers >= 3 {
+        if self.is_fullscreen() && fingers >= 3 {
             self.exit_fullscreen_for_gesture();
         }
 
@@ -264,9 +264,66 @@ impl DriftWm {
             GestureState::SwipeMove => {
                 let pointer = self.seat.get_pointer().unwrap();
                 let cursor_pos = pointer.current_location();
-                let canvas_delta: Point<f64, Logical> =
-                    (delta.x / zoom, delta.y / zoom).into();
-                self.warp_pointer(cursor_pos + canvas_delta);
+                drop(pointer);
+
+                let gesture_output = match self.gesture_output.clone() {
+                    Some(o) => o,
+                    None => return,
+                };
+                let (cur_camera, cur_zoom, cur_layout_pos) = {
+                    let os = crate::state::output_state(&gesture_output);
+                    (os.camera, os.zoom, os.layout_position)
+                };
+                let output_size = gesture_output
+                    .current_mode()
+                    .map(|m| m.size.to_logical(1))
+                    .unwrap_or((1, 1).into());
+
+                // Current canvas → screen on gesture output, then to layout space
+                let old_screen = canvas_to_screen(CanvasPos(cursor_pos), cur_camera, cur_zoom).0;
+                let new_screen: Point<f64, Logical> = (
+                    old_screen.x + delta.x,
+                    old_screen.y + delta.y,
+                ).into();
+                let new_layout: Point<f64, Logical> = (
+                    new_screen.x + cur_layout_pos.x as f64,
+                    new_screen.y + cur_layout_pos.y as f64,
+                ).into();
+
+                let (target_output, target_screen) =
+                    if let Some(target) = self.output_at_layout_pos(new_layout) {
+                        if target != gesture_output {
+                            let target_lp = crate::state::output_state(&target).layout_position;
+                            let ts: Point<f64, Logical> = (
+                                new_layout.x - target_lp.x as f64,
+                                new_layout.y - target_lp.y as f64,
+                            ).into();
+                            (target, ts)
+                        } else {
+                            (gesture_output.clone(), new_screen)
+                        }
+                    } else {
+                        // No adjacent output — clamp to gesture output bounds
+                        let clamped: Point<f64, Logical> = (
+                            new_screen.x.clamp(0.0, output_size.w as f64 - 1.0),
+                            new_screen.y.clamp(0.0, output_size.h as f64 - 1.0),
+                        ).into();
+                        (gesture_output.clone(), clamped)
+                    };
+
+                let (target_camera, target_zoom) = {
+                    let os = crate::state::output_state(&target_output);
+                    (os.camera, os.zoom)
+                };
+                let new_canvas = canvas::screen_to_canvas(
+                    canvas::ScreenPos(target_screen), target_camera, target_zoom,
+                ).0;
+
+                if target_output != gesture_output {
+                    self.focused_output = Some(target_output.clone());
+                    self.gesture_output = Some(target_output);
+                }
+                self.warp_pointer(new_canvas);
             }
             GestureState::SwipeResize {
                 window,
@@ -276,7 +333,38 @@ impl DriftWm {
                 cumulative,
                 ..
             } => {
-                *cumulative += Point::from((delta.x / zoom, delta.y / zoom));
+                // Force focused_output back if it drifted during resize
+                if let Some(ref output) = self.gesture_output
+                    && self.focused_output.as_ref().is_some_and(|fo| fo != output)
+                {
+                    self.focused_output = Some(output.clone());
+                }
+
+                // Clamp gesture delta so the virtual pointer stays within the
+                // gesture output's bounds (screen space).
+                let clamped_delta = if let Some(ref output) = self.gesture_output {
+                    let (cam, zm) = {
+                        let os = crate::state::output_state(output);
+                        (os.camera, os.zoom)
+                    };
+                    let output_size = output
+                        .current_mode()
+                        .map(|m| m.size.to_logical(1))
+                        .unwrap_or((1, 1).into());
+                    let pointer = self.seat.get_pointer().unwrap();
+                    let cur_screen = canvas_to_screen(CanvasPos(pointer.current_location()), cam, zm).0;
+                    drop(pointer);
+                    let new_screen: Point<f64, Logical> = (
+                        (cur_screen.x + delta.x).clamp(0.0, output_size.w as f64 - 1.0),
+                        (cur_screen.y + delta.y).clamp(0.0, output_size.h as f64 - 1.0),
+                    ).into();
+                    let clamped_dx = new_screen.x - cur_screen.x;
+                    let clamped_dy = new_screen.y - cur_screen.y;
+                    Point::from((clamped_dx / zoom, clamped_dy / zoom))
+                } else {
+                    Point::from((delta.x / zoom, delta.y / zoom))
+                };
+                *cumulative += clamped_delta;
 
                 let mut new_w = initial_size.w;
                 let mut new_h = initial_size.h;
@@ -396,7 +484,7 @@ impl DriftWm {
 
         // During fullscreen: 3+ finger pinch exits fullscreen first;
         // 2-finger pinch and hold forward to the fullscreen app.
-        if self.fullscreen.is_some() {
+        if self.is_fullscreen() {
             if fingers >= 3 {
                 self.exit_fullscreen_for_gesture();
             } else {
@@ -654,17 +742,16 @@ impl DriftWm {
 
         let initial_window_location = self.space.element_location(&window).unwrap_or_default();
         let pointer = self.seat.get_pointer().unwrap();
-        let grab = MoveSurfaceGrab {
-            start_data: GrabStartData {
+        let grab = MoveSurfaceGrab::new(
+            GrabStartData {
                 focus: None,
                 button: 0, // no physical button — gesture-initiated
                 location: pos,
             },
             window,
             initial_window_location,
-            snap: SnapState::default(),
-            output: self.active_output().unwrap(),
-        };
+            self.active_output().unwrap(),
+        );
         pointer.set_grab(self, grab, serial, Focus::Clear);
 
         self.gesture_state = Some(GestureState::SwipeMove);

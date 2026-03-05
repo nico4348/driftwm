@@ -34,6 +34,7 @@ pub struct ForeignToplevelManagerState {
 
 pub trait ForeignToplevelHandler {
     fn foreign_toplevel_manager_state(&mut self) -> &mut ForeignToplevelManagerState;
+    fn foreign_toplevel_outputs(&self) -> Vec<Output>;
     fn activate(&mut self, wl_surface: WlSurface);
     fn close(&mut self, wl_surface: WlSurface);
     fn set_fullscreen(&mut self, wl_surface: WlSurface, wl_output: Option<WlOutput>);
@@ -44,7 +45,7 @@ struct ToplevelData {
     title: Option<String>,
     app_id: Option<String>,
     states: Vec<u32>,
-    output: Option<Output>,
+    /// All WlOutputs we've sent output_enter for, per handle instance.
     instances: HashMap<ZwlrForeignToplevelHandleV1, Vec<WlOutput>>,
 }
 
@@ -72,7 +73,9 @@ impl ForeignToplevelManagerState {
     }
 }
 
-/// Call each frame to sync foreign-toplevel state with the current window list.
+/// Sync foreign-toplevel state with the current window list.
+/// Call once per frame (not per-output) — windows on the infinite canvas
+/// appear on all outputs, so there's no per-output tracking.
 ///
 /// Takes split references to avoid borrow conflicts with DriftWm.
 /// Generic over D (the compositor state type) for `create_resource` dispatch.
@@ -80,23 +83,23 @@ pub fn refresh<D>(
     ft_state: &mut ForeignToplevelManagerState,
     space: &Space<Window>,
     focused_surface: Option<&WlSurface>,
-    output: &Output,
+    outputs: &[Output],
 ) where
     D: Dispatch<ZwlrForeignToplevelHandleV1, ()> + 'static,
 {
     // 1. Remove closed or widget windows
     ft_state.toplevels.retain(|surface, data| {
-        let dominated = space.elements().any(|w| {
+        let alive = space.elements().any(|w| {
             let s = w.toplevel().unwrap().wl_surface();
             s == surface
                 && !crate::config::applied_rule(s).is_some_and(|r| r.widget)
         });
-        if !dominated {
+        if !alive {
             for instance in data.instances.keys() {
                 instance.closed();
             }
         }
-        dominated
+        alive
     });
 
     // 2. Refresh non-focused windows first (deactivate-before-activate ordering)
@@ -112,20 +115,40 @@ pub fn refresh<D>(
             focused_entry = Some(window.clone());
             continue;
         }
-        refresh_toplevel::<D>(ft_state, &wl_surface, output, false);
+        refresh_toplevel::<D>(ft_state, &wl_surface, outputs, false);
     }
 
     // 3. Refresh focused window last (with Activated state)
     if let Some(window) = focused_entry {
         let wl_surface = window.toplevel().unwrap().wl_surface().clone();
-        refresh_toplevel::<D>(ft_state, &wl_surface, output, true);
+        refresh_toplevel::<D>(ft_state, &wl_surface, outputs, true);
+    }
+}
+
+/// Send output_enter for a newly connected output to all existing toplevels.
+pub fn send_output_enter_all(
+    ft_state: &mut ForeignToplevelManagerState,
+    output: &Output,
+) {
+    for data in ft_state.toplevels.values_mut() {
+        for (instance, outputs) in &mut data.instances {
+            if let Some(client) = instance.client() {
+                for wl_output in output.client_outputs(&client) {
+                    if !outputs.iter().any(|o| o == &wl_output) {
+                        instance.output_enter(&wl_output);
+                        outputs.push(wl_output);
+                    }
+                }
+                instance.done();
+            }
+        }
     }
 }
 
 fn refresh_toplevel<D>(
     protocol_state: &mut ForeignToplevelManagerState,
     wl_surface: &WlSurface,
-    output: &Output,
+    outputs: &[Output],
     has_focus: bool,
 ) where
     D: Dispatch<ZwlrForeignToplevelHandleV1, ()> + 'static,
@@ -166,17 +189,11 @@ fn refresh_toplevel<D>(
                 states_changed = true;
             }
 
-            let mut output_changed = false;
-            if data.output.as_ref() != Some(output) {
-                data.output = Some(output.clone());
-                output_changed = true;
-            }
-
             let something_changed =
-                new_title.is_some() || new_app_id.is_some() || states_changed || output_changed;
+                new_title.is_some() || new_app_id.is_some() || states_changed;
 
             if something_changed {
-                for (instance, outputs) in &mut data.instances {
+                for instance in data.instances.keys() {
                     if let Some(new_title) = new_title {
                         instance.title(new_title.to_owned());
                     }
@@ -191,35 +208,21 @@ fn refresh_toplevel<D>(
                                 .collect(),
                         );
                     }
-                    if output_changed {
-                        for wl_output in outputs.drain(..) {
-                            instance.output_leave(&wl_output);
-                        }
-                        if let Some(output) = &data.output
-                            && let Some(client) = instance.client()
-                        {
-                            for wl_output in output.client_outputs(&client) {
-                                instance.output_enter(&wl_output);
-                                outputs.push(wl_output);
-                            }
-                        }
-                    }
                     instance.done();
                 }
             }
 
             // Clean dead wl_outputs
-            for outputs in data.instances.values_mut() {
-                outputs.retain(|x| x.is_alive());
+            for wl_outputs in data.instances.values_mut() {
+                wl_outputs.retain(|x| x.is_alive());
             }
         }
         Entry::Vacant(entry) => {
-            // New window
+            // New window — send output_enter for ALL outputs
             let mut data = ToplevelData {
                 title,
                 app_id,
                 states,
-                output: Some(output.clone()),
                 instances: HashMap::new(),
             };
 
@@ -229,6 +232,7 @@ fn refresh_toplevel<D>(
                         &protocol_state.display,
                         &client,
                         manager,
+                        outputs,
                     );
                 }
             }
@@ -244,6 +248,7 @@ impl ToplevelData {
         handle: &DisplayHandle,
         client: &Client,
         manager: &ZwlrForeignToplevelManagerV1,
+        all_outputs: &[Output],
     ) where
         D: Dispatch<ZwlrForeignToplevelHandleV1, ()>,
         D: 'static,
@@ -262,16 +267,17 @@ impl ToplevelData {
 
         toplevel.state(self.states.iter().flat_map(|x| x.to_ne_bytes()).collect());
 
-        let mut outputs = Vec::new();
-        if let Some(output) = &self.output {
+        // Canvas windows appear on all outputs
+        let mut wl_outputs = Vec::new();
+        for output in all_outputs {
             for wl_output in output.client_outputs(client) {
                 toplevel.output_enter(&wl_output);
-                outputs.push(wl_output);
+                wl_outputs.push(wl_output);
             }
         }
 
         toplevel.done();
-        self.instances.insert(toplevel, outputs);
+        self.instances.insert(toplevel, wl_outputs);
     }
 }
 
@@ -293,13 +299,14 @@ where
     ) {
         let manager = data_init.init(resource, ());
 
-        let state = state.foreign_toplevel_manager_state();
+        let outputs = state.foreign_toplevel_outputs();
+        let ft_state = state.foreign_toplevel_manager_state();
 
-        for data in state.toplevels.values_mut() {
-            data.add_instance::<D>(handle, client, &manager);
+        for data in ft_state.toplevels.values_mut() {
+            data.add_instance::<D>(handle, client, &manager, &outputs);
         }
 
-        state.instances.push(manager);
+        ft_state.instances.push(manager);
     }
 
     fn can_view(client: Client, global_data: &ForeignToplevelGlobalData) -> bool {

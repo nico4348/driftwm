@@ -97,9 +97,9 @@ impl CompositorHandler for DriftWm {
         // Session lock: confirm lock on first buffer commit from the lock surface
         if let crate::state::SessionLock::Pending(_) = &self.session_lock {
             let is_lock_surface = self
-                .lock_surface
-                .as_ref()
-                .is_some_and(|ls| ls.wl_surface() == surface);
+                .lock_surfaces
+                .values()
+                .any(|ls| ls.wl_surface() == surface);
             if is_lock_surface {
                 // Take the locker out of the enum to call lock() (consumes it)
                 let old = std::mem::replace(&mut self.session_lock, crate::state::SessionLock::Locked);
@@ -170,9 +170,8 @@ impl CompositorHandler for DriftWm {
                         {
                             (x - geo.size.w / 2, -y - geo.size.h / 2)
                         } else {
-                            // single-output assumption: centers on first output
                             let output_geo = {
-                                let output = self.space.outputs().next().cloned();
+                                let output = self.active_output();
                                 output.and_then(|o| self.space.output_geometry(&o))
                             };
                             if let Some(output_geo) = output_geo {

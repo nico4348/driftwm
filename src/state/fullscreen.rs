@@ -9,15 +9,17 @@ use super::{DriftWm, FocusTarget, FullscreenState};
 impl DriftWm {
     /// Enter fullscreen for the given window: lock viewport, expand window to fill screen.
     pub fn enter_fullscreen(&mut self, window: &Window) {
-        // If already fullscreen, exit first
-        if self.fullscreen.is_some() {
+        let output = self.active_output().unwrap();
+
+        // If already fullscreen on this output, exit first
+        if self.fullscreen.contains_key(&output) {
             self.exit_fullscreen();
         }
 
         let viewport_size = self.get_viewport_size();
         let saved_location = self.space.element_location(window).unwrap_or_default();
 
-        self.fullscreen = Some(FullscreenState {
+        self.fullscreen.insert(output, FullscreenState {
             window: window.clone(),
             saved_location,
             saved_camera: self.camera(),
@@ -60,9 +62,15 @@ impl DriftWm {
         keyboard.set_focus(self, Some(FocusTarget(surface)), serial);
     }
 
-    /// Exit fullscreen: restore window position, camera, and zoom.
+    /// Exit fullscreen on the active output: restore window position, camera, and zoom.
     pub fn exit_fullscreen(&mut self) {
-        let Some(fs) = self.fullscreen.take() else {
+        let Some(output) = self.active_output() else { return };
+        self.exit_fullscreen_on(&output);
+    }
+
+    /// Exit fullscreen on a specific output.
+    pub fn exit_fullscreen_on(&mut self, output: &smithay::output::Output) {
+        let Some(fs) = self.fullscreen.remove(output) else {
             return;
         };
 
@@ -73,11 +81,24 @@ impl DriftWm {
         });
         fs.window.toplevel().unwrap().send_configure();
 
-        // Restore window position, camera, zoom
+        // Restore window position, camera, zoom on the specific output
         self.space.map_element(fs.window, fs.saved_location, false);
-        self.set_camera(fs.saved_camera);
-        self.set_zoom(fs.saved_zoom);
+        {
+            let mut os = super::output_state(output);
+            os.camera = fs.saved_camera;
+            os.zoom = fs.saved_zoom;
+        }
         self.update_output_from_camera();
+    }
+
+    /// Find which output holds a fullscreen window by its surface.
+    pub fn find_fullscreen_output_for_surface(
+        &self,
+        wl_surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    ) -> Option<smithay::output::Output> {
+        self.fullscreen.iter()
+            .find(|(_, fs)| fs.window.toplevel().unwrap().wl_surface() == wl_surface)
+            .map(|(o, _)| o.clone())
     }
 
     /// Exit fullscreen and remap the pointer to maintain its screen position

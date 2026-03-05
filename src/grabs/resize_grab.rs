@@ -8,6 +8,7 @@ use smithay::{
         },
         SeatHandler,
     },
+    output::Output,
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel,
     utils::{Logical, Point, Size},
     wayland::compositor::with_states,
@@ -16,6 +17,7 @@ use smithay::{
 use smithay::input::pointer::CursorImageStatus;
 
 use crate::state::DriftWm;
+use driftwm::canvas::{self, CanvasPos, canvas_to_screen};
 
 /// Tracks the resize lifecycle for a window. Stored in the surface data map
 /// (wrapped in `RefCell`) so that `compositor::commit()` can reposition
@@ -43,6 +45,7 @@ pub struct ResizeSurfaceGrab {
     pub initial_window_location: Point<i32, Logical>,
     pub initial_window_size: Size<i32, Logical>,
     pub last_window_size: Size<i32, Logical>,
+    pub output: Output,
 }
 
 /// Check if `edges` includes a horizontal/vertical component via raw bit values.
@@ -68,7 +71,30 @@ impl PointerGrab<DriftWm> for ResizeSurfaceGrab {
         _focus: Option<(<DriftWm as SeatHandler>::PointerFocus, Point<f64, Logical>)>,
         event: &MotionEvent,
     ) {
-        let delta = event.location - self.start_data.location;
+        // Force pointer back if Phase 3 input routing crossed to another output
+        if data.focused_output.as_ref().is_some_and(|fo| *fo != self.output) {
+            data.focused_output = Some(self.output.clone());
+        }
+
+        // Clamp pointer to the grab's output bounds
+        let (camera, zoom) = {
+            let os = crate::state::output_state(&self.output);
+            (os.camera, os.zoom)
+        };
+        let output_size = self.output
+            .current_mode()
+            .map(|m| m.size.to_logical(1))
+            .unwrap_or((1, 1).into());
+        let screen = canvas_to_screen(CanvasPos(event.location), camera, zoom).0;
+        let clamped_screen: Point<f64, Logical> = (
+            screen.x.clamp(0.0, output_size.w as f64 - 1.0),
+            screen.y.clamp(0.0, output_size.h as f64 - 1.0),
+        ).into();
+        let clamped = canvas::screen_to_canvas(
+            canvas::ScreenPos(clamped_screen), camera, zoom,
+        ).0;
+
+        let delta = clamped - self.start_data.location;
 
         let mut new_w = self.initial_window_size.w;
         let mut new_h = self.initial_window_size.h;
@@ -102,7 +128,13 @@ impl PointerGrab<DriftWm> for ResizeSurfaceGrab {
             toplevel.send_pending_configure();
         }
 
-        handle.motion(data, None, event);
+        // Warp pointer to clamped position so it visually stops at output edge
+        let clamped_event = MotionEvent {
+            location: clamped,
+            serial: event.serial,
+            time: event.time,
+        };
+        handle.motion(data, None, &clamped_event);
     }
 
     fn button(

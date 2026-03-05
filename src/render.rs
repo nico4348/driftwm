@@ -242,7 +242,11 @@ pub fn build_cursor_elements(
     renderer: &mut GlesRenderer,
     camera: Point<f64, smithay::utils::Logical>,
     zoom: f64,
+    alpha: f32,
 ) -> Vec<MemoryRenderBufferRenderElement<GlesRenderer>> {
+    if alpha <= 0.0 {
+        return vec![];
+    }
     let pointer = state.seat.get_pointer().unwrap();
     let canvas_pos = pointer.current_location();
     // Custom elements are in screen-local physical coords
@@ -288,7 +292,7 @@ pub fn build_cursor_elements(
         renderer,
         pos,
         buffer,
-        None,
+        Some(alpha),
         None,
         None,
         Kind::Cursor,
@@ -310,7 +314,8 @@ pub fn update_background_element(
 ) -> (bool, bool) {
     let camera_moved = cur_camera != last_rendered_camera;
     let zoom_changed = cur_zoom != last_rendered_zoom;
-    if let Some(ref mut elem) = state.cached_bg_element {
+    let output_name = output.name();
+    if let Some(elem) = state.cached_bg_elements.get_mut(&output_name) {
         let scale = output.current_scale().integer_scale();
         let output_size = output
             .current_mode()
@@ -340,7 +345,7 @@ fn compose_lock_frame(
 ) -> Vec<OutputRenderElements> {
     let mut elements = Vec::new();
 
-    if let Some(lock_surface) = &state.lock_surface {
+    if let Some(lock_surface) = state.lock_surfaces.get(output) {
         let output_scale = output.current_scale().fractional_scale();
         let lock_elements = smithay::backend::renderer::element::surface::render_elements_from_surface_tree(
             renderer,
@@ -369,16 +374,13 @@ pub fn compose_frame(
         return compose_lock_frame(state, renderer, output, cursor_elements);
     }
 
-    // Lazy re-init background after config reload cleared the cached state
-    if state.background_shader.is_none()
-        && state.cached_bg_element.is_none()
-        && state.background_tile.is_none()
-    {
+    // Ensure this output has a background element (lazy init per output, and re-init after config reload)
+    if !state.cached_bg_elements.contains_key(&output.name()) && state.background_tile.is_none() {
         let output_size = output
             .current_mode()
             .map(|m| m.size.to_logical(output.current_scale().integer_scale()))
             .unwrap_or((1, 1).into());
-        init_background(state, renderer, output_size);
+        init_background(state, renderer, output_size, &output.name());
     }
 
     // Read per-output state directly — not via active_output() which follows the pointer
@@ -416,7 +418,7 @@ pub fn compose_frame(
         let geom_loc = window.geometry().loc;
         let geom_size = window.geometry().size;
         let wl_surface = window.toplevel().unwrap().wl_surface();
-        let is_fullscreen = state.fullscreen.as_ref().is_some_and(|fs| &fs.window == window);
+        let is_fullscreen = state.fullscreen.values().any(|fs| &fs.window == window);
         let has_ssd = !is_fullscreen && state.decorations.contains_key(&wl_surface.id());
 
         let mut bbox = window.bbox();
@@ -566,7 +568,7 @@ pub fn compose_frame(
     let canvas_layer_elements = build_canvas_layer_elements(state, renderer, output, camera, zoom);
 
     let bg_elements: Vec<OutputRenderElements> =
-        if let Some(ref elem) = state.cached_bg_element {
+        if let Some(elem) = state.cached_bg_elements.get(&output.name()) {
             vec![OutputRenderElements::Background(
                 RescaleRenderElement::from_element(
                     elem.clone(),
@@ -580,7 +582,7 @@ pub fn compose_frame(
             vec![]
         };
 
-    let is_fullscreen = state.fullscreen.is_some();
+    let is_fullscreen = state.is_output_fullscreen(output);
     let overlay_elements = build_layer_elements(output, renderer, WlrLayer::Overlay);
     let top_elements = if !is_fullscreen {
         build_layer_elements(output, renderer, WlrLayer::Top)
@@ -620,7 +622,7 @@ pub fn compose_frame(
 /// Compile background shader and/or load tile image.
 /// Called at startup and on config reload (lazy re-init).
 /// On failure, falls back to `DEFAULT_SHADER` — never leaves background uninitialized.
-pub fn init_background(state: &mut crate::state::DriftWm, renderer: &mut GlesRenderer, initial_size: Size<i32, smithay::utils::Logical>) {
+pub fn init_background(state: &mut crate::state::DriftWm, renderer: &mut GlesRenderer, initial_size: Size<i32, smithay::utils::Logical>, output_name: &str) {
     // Try loading tile image first (if configured and no shader_path)
     if state.config.background.shader_path.is_none()
         && let Some(path) = state.config.background.tile_path.as_deref()
@@ -671,32 +673,38 @@ pub fn init_background(state: &mut crate::state::DriftWm, renderer: &mut GlesRen
         }
     }
 
-    // Shader path: custom or default
-    let shader_source = if let Some(path) = state.config.background.shader_path.as_deref() {
-        match std::fs::read_to_string(path) {
-            Ok(src) => src,
-            Err(e) => {
-                tracing::error!("Failed to read shader {path}: {e}, using default");
-                driftwm::config::DEFAULT_SHADER.to_string()
-            }
-        }
+    // Reuse cached shader if already compiled (avoids redundant GPU work
+    // when multiple outputs each need a background element).
+    let shader = if let Some(ref cached) = state.background_shader {
+        cached.clone()
     } else {
-        driftwm::config::DEFAULT_SHADER.to_string()
-    };
+        let shader_source = if let Some(path) = state.config.background.shader_path.as_deref() {
+            match std::fs::read_to_string(path) {
+                Ok(src) => src,
+                Err(e) => {
+                    tracing::error!("Failed to read shader {path}: {e}, using default");
+                    driftwm::config::DEFAULT_SHADER.to_string()
+                }
+            }
+        } else {
+            driftwm::config::DEFAULT_SHADER.to_string()
+        };
 
-    let shader = match renderer.compile_custom_pixel_shader(&shader_source, BG_UNIFORMS) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("Failed to compile shader: {e}, using default");
-            renderer
-                .compile_custom_pixel_shader(driftwm::config::DEFAULT_SHADER, BG_UNIFORMS)
-                .expect("Default shader must compile")
-        }
+        let compiled = match renderer.compile_custom_pixel_shader(&shader_source, BG_UNIFORMS) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to compile shader: {e}, using default");
+                renderer
+                    .compile_custom_pixel_shader(driftwm::config::DEFAULT_SHADER, BG_UNIFORMS)
+                    .expect("Default shader must compile")
+            }
+        };
+        state.background_shader = Some(compiled.clone());
+        compiled
     };
-    state.background_shader = Some(shader.clone());
 
     let area = Rectangle::from_size(initial_size);
-    state.cached_bg_element = Some(PixelShaderElement::new(
+    state.cached_bg_elements.insert(output_name.to_string(), PixelShaderElement::new(
         shader,
         area,
         Some(vec![area]),
@@ -834,20 +842,22 @@ fn render_to_offscreen(
     Ok(mapping)
 }
 
-/// Post-render: frame callbacks, foreign toplevel refresh, space cleanup.
-pub fn post_render(state: &mut crate::state::DriftWm, output: &Output) {
-    // Foreign toplevel refresh
-    {
-        let keyboard = state.seat.get_keyboard().unwrap();
-        let focused = keyboard.current_focus().map(|f| f.0);
-        driftwm::protocols::foreign_toplevel::refresh::<crate::state::DriftWm>(
-            &mut state.foreign_toplevel_state,
-            &state.space,
-            focused.as_ref(),
-            output,
-        );
-    }
+/// Sync foreign-toplevel protocol state with the current window list.
+/// Call once per frame iteration (not per-output).
+pub fn refresh_foreign_toplevels(state: &mut crate::state::DriftWm) {
+    let keyboard = state.seat.get_keyboard().unwrap();
+    let focused = keyboard.current_focus().map(|f| f.0);
+    let outputs: Vec<Output> = state.space.outputs().cloned().collect();
+    driftwm::protocols::foreign_toplevel::refresh::<crate::state::DriftWm>(
+        &mut state.foreign_toplevel_state,
+        &state.space,
+        focused.as_ref(),
+        &outputs,
+    );
+}
 
+/// Post-render: frame callbacks, space cleanup.
+pub fn post_render(state: &mut crate::state::DriftWm, output: &Output) {
     // Frame callbacks to windows
     let time = state.start_time.elapsed();
     for window in state.space.elements() {
@@ -874,7 +884,7 @@ pub fn post_render(state: &mut crate::state::DriftWm, output: &Output) {
     }
 
     // Lock surface frame callback
-    if let Some(lock_surface) = &state.lock_surface {
+    if let Some(lock_surface) = state.lock_surfaces.get(output) {
         smithay::desktop::utils::send_frames_surface_tree(
             lock_surface.wl_surface(),
             output,

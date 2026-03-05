@@ -222,7 +222,7 @@ impl DriftWm {
             let serial = SERIAL_COUNTER.next_serial();
             let time = Event::time_msec(&event);
             let pointer = self.seat.get_pointer().unwrap();
-            let focus = self.lock_surface.as_ref().map(|ls| {
+            let focus = self.active_output().and_then(|o| self.lock_surfaces.get(&o)).map(|ls| {
                 (FocusTarget(ls.wl_surface().clone()), Point::<f64, smithay::utils::Logical>::from((0.0, 0.0)))
             });
             pointer.motion(self, focus, &MotionEvent { location: screen_pos, serial, time });
@@ -294,7 +294,7 @@ impl DriftWm {
                 (old_pos.x + delta.x, old_pos.y + delta.y).into();
             let serial = SERIAL_COUNTER.next_serial();
             let time = Event::time_msec(&event);
-            let focus = self.lock_surface.as_ref().map(|ls| {
+            let focus = self.active_output().and_then(|o| self.lock_surfaces.get(&o)).map(|ls| {
                 (FocusTarget(ls.wl_surface().clone()), Point::<f64, smithay::utils::Logical>::from((0.0, 0.0)))
             });
             pointer.motion(self, focus, &MotionEvent { location: new_pos, serial, time });

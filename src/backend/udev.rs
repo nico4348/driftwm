@@ -93,7 +93,10 @@ pub(crate) fn render_if_needed(device: &UdevDevice, data: &mut CalloopData) {
         data.state.mark_all_dirty();
     }
 
-    // 4. Render outputs that need it
+    // 4. Foreign toplevel refresh (once per frame, not per-output)
+    crate::render::refresh_foreign_toplevels(&mut data.state);
+
+    // 5. Render outputs that need it
     for (&crtc, surface) in dev.surfaces.iter_mut() {
         if data.state.redraws_needed.contains(&crtc)
             && !data.state.frames_pending.contains(&crtc)
@@ -264,6 +267,7 @@ pub fn init_udev(
     let mut drm_scanner = DrmScanner::new();
     let scan_result = drm_scanner.scan_connectors(&drm)?;
     let mut device_surfaces: HashMap<crtc::Handle, SurfaceData> = HashMap::new();
+    let saved_output_state = crate::state::read_all_per_output_state();
 
     for event in scan_result {
         match event {
@@ -282,6 +286,7 @@ pub fn init_udev(
                     crtc,
                     &data.display.handle(),
                     &mut data.state,
+                    &saved_output_state,
                 ) {
                     device_surfaces.insert(crtc, surface_data);
                 }
@@ -310,15 +315,8 @@ pub fn init_udev(
 
     // 7. Compile background shader / load tile (shared with winit)
     // Uses first surface's mode for initial background element size (resized per-frame anyway)
-    let initial_size = device_surfaces
-        .values()
-        .next()
-        .and_then(|s| s.output.current_mode())
-        .map(|m| m.size.to_logical(1))
-        .unwrap_or((1920, 1080).into());
     {
         let mut backend = data.state.backend.take().unwrap();
-        crate::render::init_background(&mut data.state, backend.renderer(), initial_size);
         data.state.shadow_shader = crate::render::compile_shadow_shader(backend.renderer());
         data.state.backend = Some(backend);
     }
@@ -415,6 +413,7 @@ pub fn init_udev(
                                     connector_type_name(&connector),
                                     connector.interface_id()
                                 );
+                                let saved = crate::state::read_all_per_output_state();
                                 if let Some(sd) = create_surface(
                                     drm,
                                     gbm,
@@ -423,10 +422,16 @@ pub fn init_udev(
                                     crtc,
                                     &data.display.handle(),
                                     &mut data.state,
+                                    &saved,
                                 ) {
                                     surfaces.insert(crtc, sd);
                                     data.state.active_crtcs.insert(crtc);
                                     let surface = surfaces.get_mut(&crtc).unwrap();
+                                    // Notify existing toplevels about the new output
+                                    driftwm::protocols::foreign_toplevel::send_output_enter_all(
+                                        &mut data.state.foreign_toplevel_state,
+                                        &surface.output,
+                                    );
                                     render_frame(data, &mut surface.compositor, &surface.output, crtc);
                                 }
                             }
@@ -466,6 +471,11 @@ pub fn init_udev(
                                         data.state.gesture_output = None;
                                         data.state.gesture_state = None;
                                     }
+
+                                    // Clean up per-output resources
+                                    data.state.cached_bg_elements.remove(&surface.output.name());
+                                    data.state.fullscreen.remove(&surface.output);
+                                    data.state.lock_surfaces.remove(&surface.output);
                                 }
                                 data.state.active_crtcs.remove(&crtc);
                                 data.state.frames_pending.remove(&crtc);
@@ -581,6 +591,7 @@ pub(crate) fn pick_mode_for_config(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_surface(
     drm: &mut DrmDevice,
     gbm: &GbmDevice<DrmDeviceFd>,
@@ -589,6 +600,7 @@ fn create_surface(
     crtc: crtc::Handle,
     dh: &smithay::reexports::wayland_server::DisplayHandle,
     state: &mut DriftWm,
+    saved_output_state: &std::collections::HashMap<String, (smithay::utils::Point<f64, smithay::utils::Logical>, f64)>,
 ) -> Option<SurfaceData> {
     let connector_name = format!(
         "{}-{}",
@@ -728,14 +740,24 @@ fn create_surface(
 
     init_output_state(&output, camera, state.config.friction, layout_position);
 
+    // Restore per-output camera/zoom from state file if available
+    if let Some(&(saved_cam, saved_zoom)) = saved_output_state.get(&connector_name) {
+        let mut os = crate::state::output_state(&output);
+        os.camera = saved_cam;
+        os.zoom = saved_zoom;
+        tracing::info!("Output {connector_name}: restored camera ({:.0}, {:.0}) zoom {:.3}", saved_cam.x, saved_cam.y, saved_zoom);
+    }
+
     // Set focused_output to the first output created
     if state.focused_output.is_none() {
         state.focused_output = Some(output.clone());
     }
 
+    // Use potentially-restored camera for output mapping
+    let effective_camera = crate::state::output_state(&output).camera;
     state
         .space
-        .map_output(&output, camera.to_i32_round());
+        .map_output(&output, effective_camera.to_i32_round());
 
     Some(SurfaceData { compositor, output })
 }
@@ -767,7 +789,12 @@ fn render_frame(
     let renderer = backend.renderer();
 
     // Build cursor + compose frame
-    let cursor_elements = crate::render::build_cursor_elements(&mut data.state, renderer, cur_camera, cur_zoom);
+    let cursor_alpha = if data.state.active_output().as_ref() == Some(output) {
+        1.0
+    } else {
+        data.state.config.inactive_cursor_opacity as f32
+    };
+    let cursor_elements = crate::render::build_cursor_elements(&mut data.state, renderer, cur_camera, cur_zoom, cursor_alpha);
     let renderer = backend.renderer();
     let elements = crate::render::compose_frame(&mut data.state, renderer, output, cursor_elements);
 

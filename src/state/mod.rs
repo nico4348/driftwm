@@ -131,6 +131,7 @@ pub struct CalloopData {
 }
 
 /// Saved viewport state for HomeToggle return — includes optional fullscreen window.
+#[derive(Clone)]
 pub struct HomeReturn {
     pub camera: Point<f64, Logical>,
     pub zoom: f64,
@@ -169,6 +170,8 @@ pub struct OutputState {
     /// Physical arrangement position in layout space.
     /// (0,0) for single output; from config for multi-monitor.
     pub layout_position: Point<i32, Logical>,
+    /// Saved home position for HomeToggle (per-output).
+    pub home_return: Option<HomeReturn>,
 }
 
 /// Initialize per-output state on a newly created output.
@@ -196,6 +199,7 @@ pub fn init_output_state(output: &Output, camera: Point<f64, Logical>, friction:
                 last_rendered_camera: Point::from((f64::NAN, f64::NAN)),
                 last_frame_instant: Instant::now(),
                 layout_position,
+                home_return: None,
             })
         });
 }
@@ -251,7 +255,7 @@ pub struct DriftWm {
     pub shadow_shader: Option<GlesPixelProgram>,
     pub background_shader: Option<GlesPixelProgram>,
     // -- per-output: cached render elements (!Send, stays on DriftWm) --
-    pub cached_bg_element: Option<PixelShaderElement>,
+    pub cached_bg_elements: HashMap<String, PixelShaderElement>,
     // -- global: background tile (loaded once, shared) --
     pub background_tile: Option<(MemoryRenderBuffer, i32, i32)>,
 
@@ -286,7 +290,7 @@ pub struct DriftWm {
     pub session_lock_manager_state: SessionLockManagerState,
     pub session_lock: SessionLock,
     // -- per-output: lock surface (one per output in multi-monitor) --
-    pub lock_surface: Option<LockSurface>,
+    pub lock_surfaces: HashMap<Output, LockSurface>,
 
     // -- global: pointer/layer state --
     pub pointer_over_layer: bool,
@@ -301,13 +305,12 @@ pub struct DriftWm {
     // -- global: focus/navigation --
     pub focus_history: Vec<Window>,
     pub cycle_state: Option<usize>,
-    pub home_return: Option<HomeReturn>,
 
     // -- global: key repeat --
     pub held_action: Option<(u32, driftwm::config::Action, Instant)>,
 
-    // -- per-output: fullscreen --
-    pub fullscreen: Option<FullscreenState>,
+    // -- per-output: fullscreen (keyed by output, since FullscreenState has Window) --
+    pub fullscreen: HashMap<Output, FullscreenState>,
 
     // -- global: gesture state --
     pub gesture_state: Option<GestureState>,
@@ -317,8 +320,7 @@ pub struct DriftWm {
     pub session: Option<LibSeatSession>,
 
     // -- global: state file persistence --
-    pub state_file_camera: Point<f64, Logical>,
-    pub state_file_zoom: f64,
+    pub state_file_cameras: HashMap<String, (Point<f64, Logical>, f64)>,
     pub state_file_last_write: Instant,
     /// Active XKB layout name (e.g. "English (US)"), updated on key events.
     pub active_layout: String,
@@ -436,7 +438,7 @@ impl DriftWm {
             pending_ssd: HashSet::new(),
             shadow_shader: None,
             background_shader: None,
-            cached_bg_element: None,
+            cached_bg_elements: HashMap::new(),
             background_tile: None,
             dmabuf_state: DmabufState::new(),
             dmabuf_global: None,
@@ -458,21 +460,19 @@ impl DriftWm {
             pending_screencopies: Vec::new(),
             session_lock_manager_state,
             session_lock: SessionLock::Unlocked,
-            lock_surface: None,
+            lock_surfaces: HashMap::new(),
             pointer_over_layer: false,
             canvas_layers: Vec::new(),
             config,
             pending_center: HashSet::new(),
             focus_history: Vec::new(),
             cycle_state: None,
-            home_return: None,
             held_action: None,
             gesture_state: None,
             pending_middle_click: None,
-            fullscreen: None,
+            fullscreen: HashMap::new(),
             session: None,
-            state_file_camera: Point::from((f64::NAN, f64::NAN)),
-            state_file_zoom: f64::NAN,
+            state_file_cameras: HashMap::new(),
             state_file_last_write: Instant::now(),
             active_layout: String::new(),
             state_file_layout: String::new(),
@@ -510,7 +510,7 @@ impl DriftWm {
             self.space.raise_element(&w, false);
         }
 
-        if let Some(ref fs) = self.fullscreen {
+        for fs in self.fullscreen.values() {
             self.space.raise_element(&fs.window, false);
         }
     }
@@ -596,6 +596,85 @@ impl DriftWm {
             .or_else(|| self.space.outputs().next().cloned())
     }
 
+    /// Get the fullscreen state for the active output (if any).
+    pub fn active_fullscreen(&self) -> Option<&FullscreenState> {
+        self.active_output()
+            .and_then(|o| self.fullscreen.get(&o))
+    }
+
+    /// Check if the active output is in fullscreen mode.
+    pub fn is_fullscreen(&self) -> bool {
+        self.active_output()
+            .is_some_and(|o| self.fullscreen.contains_key(&o))
+    }
+
+    /// Check if a specific output is in fullscreen mode.
+    pub fn is_output_fullscreen(&self, output: &Output) -> bool {
+        self.fullscreen.contains_key(output)
+    }
+
+    /// Find the output whose viewport contains (or is nearest to) a window's center.
+    /// Falls back to active output if the window isn't visible on any output.
+    pub fn output_for_window(&self, window: &smithay::desktop::Window) -> Option<Output> {
+        let loc = self.space.element_location(window)?;
+        let geo = window.geometry();
+        let center: Point<f64, Logical> = Point::from((
+            loc.x as f64 + geo.size.w as f64 / 2.0,
+            loc.y as f64 + geo.size.h as f64 / 2.0,
+        ));
+        // Find which output's visible canvas rect contains the window center.
+        let found = self.space.outputs().find(|output| {
+            let os = output_state(output);
+            let size = output.current_mode()
+                .map(|m| m.size.to_logical(1))
+                .unwrap_or((1, 1).into());
+            let visible = driftwm::canvas::visible_canvas_rect(
+                os.camera.to_i32_round(), size, os.zoom,
+            );
+            drop(os);
+            visible.contains(Point::from((center.x as i32, center.y as i32)))
+        }).cloned();
+        found.or_else(|| self.active_output())
+    }
+
+    /// Find the nearest output in the given direction from `from`.
+    pub fn output_in_direction(&self, from: &Output, dir: &driftwm::config::Direction) -> Option<Output> {
+        let from_center: Point<f64, Logical> = {
+            let os = output_state(from);
+            let size = from.current_mode()?.size.to_logical(1);
+            Point::from((
+                os.layout_position.x as f64 + size.w as f64 / 2.0,
+                os.layout_position.y as f64 + size.h as f64 / 2.0,
+            ))
+        };
+        let (dx, dy) = dir.to_unit_vec();
+
+        self.space.outputs()
+            .filter(|o| *o != from)
+            .filter_map(|o| {
+                let os = output_state(o);
+                let size = o.current_mode()?.size.to_logical(1);
+                let center: Point<f64, Logical> = Point::from((
+                    os.layout_position.x as f64 + size.w as f64 / 2.0,
+                    os.layout_position.y as f64 + size.h as f64 / 2.0,
+                ));
+                drop(os);
+                let to_x = center.x - from_center.x;
+                let to_y = center.y - from_center.y;
+                let dist = (to_x * to_x + to_y * to_y).sqrt();
+                if dist < 1.0 { return None; }
+                // Check alignment with direction (dot product > 0.5 = within ~60°)
+                let dot = (to_x * dx + to_y * dy) / dist;
+                if dot > 0.5 {
+                    Some((o.clone(), dist))
+                } else {
+                    None
+                }
+            })
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .map(|(o, _)| o)
+    }
+
     /// Find which output's layout rectangle contains `pos` in layout space.
     /// Uses `layout_position` + output mode size (NOT `space.output_geometry()`).
     pub fn output_at_layout_pos(&self, pos: Point<f64, Logical>) -> Option<Output> {
@@ -616,6 +695,7 @@ impl DriftWm {
 
     /// Convert canvas position to layout position via an output's camera/zoom.
     /// layout_pos = (canvas - camera) * zoom + layout_position
+    #[cfg(test)]
     pub fn canvas_to_layout_pos(
         canvas_pos: Point<f64, Logical>,
         os: &OutputState,
@@ -633,6 +713,7 @@ impl DriftWm {
 
     /// Convert layout position to canvas position via an output's camera/zoom.
     /// canvas = (layout_pos - layout_position) / zoom + camera
+    #[cfg(test)]
     pub fn layout_to_canvas_pos(
         layout_pos: Point<f64, Logical>,
         os: &OutputState,
@@ -714,9 +795,6 @@ impl DriftWm {
     pub fn edge_pan_velocity(&self) -> Option<Point<f64, Logical>> {
         output_state(&self.active_output().unwrap()).edge_pan_velocity
     }
-    pub fn set_edge_pan_velocity(&mut self, val: Option<Point<f64, Logical>>) {
-        output_state(&self.active_output().unwrap()).edge_pan_velocity = val;
-    }
     pub fn last_frame_instant(&self) -> Instant {
         output_state(&self.active_output().unwrap()).last_frame_instant
     }
@@ -744,28 +822,46 @@ impl DriftWm {
     /// Write viewport center + zoom to `$XDG_RUNTIME_DIR/driftwm/state` if changed.
     /// Atomic: writes to .tmp then renames.
     pub fn write_state_file_if_dirty(&mut self) {
-        let cam = self.camera();
-        let z = self.zoom();
-        // Compare with epsilon to avoid writing on sub-pixel jitter
+        // Check if any output's camera/zoom changed (not just active output)
         let layout_dirty = self.state_file_layout != self.active_layout;
-        if !layout_dirty
-            && (cam.x - self.state_file_camera.x).abs() < 0.5
-            && (cam.y - self.state_file_camera.y).abs() < 0.5
-            && (z - self.state_file_zoom).abs() < 0.001
-        {
+        let mut any_output_dirty = false;
+        for output in self.space.outputs() {
+            let os = output_state(output);
+            let name = output.name();
+            let (cam, z) = (os.camera, os.zoom);
+            drop(os);
+            if let Some(&(cached_cam, cached_z)) = self.state_file_cameras.get(&name) {
+                if (cam.x - cached_cam.x).abs() >= 0.5
+                    || (cam.y - cached_cam.y).abs() >= 0.5
+                    || (z - cached_z).abs() >= 0.001
+                {
+                    any_output_dirty = true;
+                    break;
+                }
+            } else {
+                any_output_dirty = true;
+                break;
+            }
+        }
+        if !layout_dirty && !any_output_dirty {
             return;
         }
         // Throttle writes to ~10/sec max (100ms between writes)
         if self.state_file_last_write.elapsed() < std::time::Duration::from_millis(100) {
             return;
         }
-        self.state_file_camera = cam;
-        self.state_file_zoom = z;
+        // Update cached state for all outputs
+        for output in self.space.outputs() {
+            let os = output_state(output);
+            self.state_file_cameras.insert(output.name(), (os.camera, os.zoom));
+        }
         self.state_file_layout = self.active_layout.clone();
         self.state_file_last_write = Instant::now();
 
-        // Convert camera (top-left) to viewport center in canvas coords.
+        // Convert active output's camera to viewport center in canvas coords.
         // Negate Y so positive = above origin (user-facing Y-up convention).
+        let cam = self.camera();
+        let z = self.zoom();
         let vp = self.get_viewport_size();
         let cx = cam.x + vp.w as f64 / (2.0 * z);
         let cy = -(cam.y + vp.h as f64 / (2.0 * z));
@@ -778,11 +874,14 @@ impl DriftWm {
         let tmp = dir.join("state.tmp");
         let mut content = format!("x={cx:.0}\ny={cy:.0}\nzoom={z:.3}\nlayout={}\n", self.active_layout);
 
-        if let Some(ref ret) = self.home_return {
-            let sz = ret.zoom;
-            let sx = ret.camera.x + vp.w as f64 / (2.0 * sz);
-            let sy = -(ret.camera.y + vp.h as f64 / (2.0 * sz));
-            content += &format!("saved_x={sx:.0}\nsaved_y={sy:.0}\nsaved_zoom={sz:.3}\n");
+        {
+            let home_return = output_state(&self.active_output().unwrap()).home_return.clone();
+            if let Some(ref ret) = home_return {
+                let sz = ret.zoom;
+                let sx = ret.camera.x + vp.w as f64 / (2.0 * sz);
+                let sy = -(ret.camera.y + vp.h as f64 / (2.0 * sz));
+                content += &format!("saved_x={sx:.0}\nsaved_y={sy:.0}\nsaved_zoom={sz:.3}\n");
+            }
         }
 
         // Window list: app_id of each toplevel (focused window first)
@@ -808,6 +907,16 @@ impl DriftWm {
         }
         if !app_ids.is_empty() {
             content += &format!("windows={}\n", app_ids.join(","));
+        }
+
+        // Per-output camera/zoom state
+        for output in self.space.outputs() {
+            let os = output_state(output);
+            let name = output.name();
+            content += &format!(
+                "outputs.{name}.camera_x={:.1}\noutputs.{name}.camera_y={:.1}\noutputs.{name}.zoom={:.3}\n",
+                os.camera.x, os.camera.y, os.zoom
+            );
         }
 
         if std::fs::write(&tmp, content).is_ok() {
@@ -862,7 +971,7 @@ impl DriftWm {
         // Background shader/tile — clear cached state for lazy re-init
         if new_config.background != self.config.background {
             self.background_shader = None;
-            self.cached_bg_element = None;
+            self.cached_bg_elements.clear();
             self.background_tile = None;
         }
 
@@ -986,6 +1095,37 @@ pub fn remove_state_file() {
     }
 }
 
+/// Read all per-output camera/zoom entries from the state file.
+/// Returns a map from output name to `(camera, zoom)`.
+pub fn read_all_per_output_state() -> HashMap<String, (Point<f64, Logical>, f64)> {
+    let mut result = HashMap::new();
+    let Some(dir) = state_file_dir() else { return result };
+    let Ok(content) = std::fs::read_to_string(dir.join("state")) else { return result };
+
+    // Parse lines like "outputs.eDP-1.camera_x=123.4"
+    type Partial = (Option<f64>, Option<f64>, Option<f64>);
+    let mut entries: HashMap<String, Partial> = HashMap::new();
+    for line in content.lines() {
+        let Some(rest) = line.strip_prefix("outputs.") else { continue };
+        // rest = "eDP-1.camera_x=123.4"
+        let Some((name_and_key, val_str)) = rest.split_once('=') else { continue };
+        let Ok(val) = val_str.parse::<f64>() else { continue };
+        if let Some(name) = name_and_key.strip_suffix(".camera_x") {
+            entries.entry(name.to_string()).or_default().0 = Some(val);
+        } else if let Some(name) = name_and_key.strip_suffix(".camera_y") {
+            entries.entry(name.to_string()).or_default().1 = Some(val);
+        } else if let Some(name) = name_and_key.strip_suffix(".zoom") {
+            entries.entry(name.to_string()).or_default().2 = Some(val);
+        }
+    }
+    for (name, (cx, cy, z)) in entries {
+        if let (Some(x), Some(y), Some(zoom)) = (cx, cy, z) {
+            result.insert(name, (Point::from((x, y)), zoom));
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1012,6 +1152,7 @@ mod tests {
             last_rendered_camera: Point::from(camera),
             last_frame_instant: Instant::now(),
             layout_position: Point::from(layout_position),
+            home_return: None,
         }
     }
 
