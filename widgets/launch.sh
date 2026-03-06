@@ -24,4 +24,13 @@ launch calendar    22 11  calendar_widget.py
 launch weather     22 6  weather_widget.py
 launch notif       21 4  notif_widget.py
 
+# Power button — custom padding to match tray waybar height (28px)
+alacritty --class "drift-power" \
+    -o "window.dimensions.columns=3" \
+    -o "window.dimensions.lines=1" \
+    -o "window.padding.x=5" \
+    -o "window.padding.y=3" \
+    -o "window.decorations=\"None\"" \
+    -e uv run --project "$DIR" python "$DIR/power_widget.py" &
+
 wait

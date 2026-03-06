@@ -38,6 +38,9 @@ shader_path = "~/.config/driftwm/pink_cloud.glsl"
 "XF86MonBrightnessUp" = "spawn swayosd-client --brightness raise"
 "XF86MonBrightnessDown" = "spawn swayosd-client --brightness lower"
 
+[[outputs]]
+name = "HDMI-A-1"
+transform = "90"
 
 # Dashboard widgets — positioned around origin for home view (1920x1080)
 
@@ -98,6 +101,19 @@ decoration = "none"
 
 [[window_rules]]
 app_id = "waybar"
-position = [150, -260]
+position = [126, -259]
 widget = true
 decoration = "none"
+
+[[window_rules]]
+app_id = "drift-power"
+position = [275, -259]
+widget = true
+no_focus = false
+decoration = "none"
+
+[[window_rules]]
+app_id = "drift-power-menu"
+position = [275, -370]
+widget = true
+no_focus = false
