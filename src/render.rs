@@ -901,36 +901,25 @@ fn render_to_offscreen(
     transform: Transform,
     elements: &[&OutputRenderElements],
 ) -> Result<smithay::backend::renderer::gles::GlesMapping, Box<dyn std::error::Error>> {
-    use smithay::backend::renderer::{Bind, Color32F, ExportMem, Frame, Offscreen, Renderer};
-    use smithay::backend::renderer::element::{Element, RenderElement};
+    use smithay::backend::renderer::{Bind, ExportMem, Offscreen};
+    use smithay::backend::renderer::damage::OutputDamageTracker;
     use smithay::backend::renderer::gles::GlesTexture;
 
     let buffer_size = size.to_logical(1).to_buffer(1, Transform::Normal);
 
     let mut texture: GlesTexture = Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Xrgb8888, buffer_size)?;
 
-    let _sync_point = {
+    {
         let mut target = renderer.bind(&mut texture)?;
-
-        let transform = transform.invert();
-        let output_rect = Rectangle::from_size(transform.transform_size(size));
-
-        let mut frame = renderer.render(&mut target, size, transform)?;
-
-        frame.clear(Color32F::from([0.0f32, 0.0, 0.0, 1.0]), &[output_rect])?;
-
-        for element in elements.iter().rev() {
-            let src = element.src();
-            let dst = element.geometry(scale);
-
-            if let Some(mut damage) = output_rect.intersection(dst) {
-                damage.loc -= dst.loc;
-                element.draw(&mut frame, src, dst, &[damage], &[])?;
-            }
-        }
-
-        frame.finish()?
-    };
+        let mut damage_tracker = OutputDamageTracker::new(size, scale, transform);
+        let _ = damage_tracker.render_output(
+            renderer,
+            &mut target,
+            0,
+            elements,
+            [0.0f32, 0.0, 0.0, 1.0],
+        )?;
+    }
 
     // Re-bind texture to copy pixels
     let target = renderer.bind(&mut texture)?;
@@ -972,7 +961,6 @@ pub fn render_capture_frames(
 
     let output_scale = output.current_scale().fractional_scale();
     let scale = Scale::from(output_scale);
-    let transform = output.current_transform();
     let timestamp = state.start_time.elapsed();
 
     for capture in pending {
@@ -985,7 +973,9 @@ pub fn render_capture_frames(
                 .collect()
         };
 
-        let result = render_to_offscreen(renderer, capture.buffer_size, scale, transform, &use_elements);
+        // ext-image-copy-capture buffer_size is already in transformed/logical orientation,
+        // matching the element coordinate space — render with Normal (no additional transform).
+        let result = render_to_offscreen(renderer, capture.buffer_size, scale, Transform::Normal, &use_elements);
 
         match result {
             Ok(mapping) => {
