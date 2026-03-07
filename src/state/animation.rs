@@ -49,7 +49,8 @@ impl DriftWm {
                 &[WlrLayer::Overlay, WlrLayer::Top, WlrLayer::Bottom, WlrLayer::Background],
             )
         } else {
-            self.surface_under(canvas_pos, Some(false))
+            self.override_redirect_under(canvas_pos)
+                .or_else(|| self.surface_under(canvas_pos, Some(false)))
                 .or_else(|| self.canvas_layer_under(canvas_pos))
                 .or_else(|| self.surface_under(canvas_pos, Some(true)))
         }

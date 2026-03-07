@@ -234,16 +234,26 @@ impl XwmHandler for DriftWm {
         }
         window.configure(new_geo).ok();
 
-        // Apply X11 position delta to Space element location so left/top
-        // edge CSD resizes visually move the correct edge.
+        // Apply X11 position delta to Space element location, but only
+        // during an active resize — otherwise apps reposition themselves
+        // to their remembered X11 root coords after map, undoing our centering.
         let dx = new_geo.loc.x - old_geo.loc.x;
         let dy = new_geo.loc.y - old_geo.loc.y;
         if (dx != 0 || dy != 0)
             && let Some(smithay_window) = self.find_x11_window(&window)
+            && let Some(wl_surface) = smithay_window.wl_surface()
             && let Some(loc) = self.space.element_location(&smithay_window)
         {
-            let new_loc = loc + smithay::utils::Point::from((dx, dy));
-            self.space.map_element(smithay_window, new_loc, false);
+            let is_resizing = with_states(&wl_surface, |states| {
+                states
+                    .data_map
+                    .get::<std::cell::RefCell<crate::grabs::ResizeState>>()
+                    .is_some_and(|s| !matches!(*s.borrow(), crate::grabs::ResizeState::Idle))
+            });
+            if is_resizing {
+                let new_loc = loc + smithay::utils::Point::from((dx, dy));
+                self.space.map_element(smithay_window, new_loc, false);
+            }
         }
     }
 
@@ -358,6 +368,12 @@ impl XWaylandShellHandler for DriftWm {
 
     fn surface_associated(&mut self, _xwm: XwmId, wl_surface: WlSurface, surface: X11Surface) {
         tracing::debug!("X11 surface associated: {:?}", surface.class());
+
+        // Clear loading cursor (same as compositor.rs commit path for Wayland windows)
+        if self.exec_cursor_deadline.take().is_some() {
+            self.exec_cursor_show_at = None;
+            self.cursor_status = CursorImageStatus::default_named();
+        }
 
         let Some(smithay_window) = self.find_x11_window(&surface) else {
             return;

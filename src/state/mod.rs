@@ -571,6 +571,89 @@ impl DriftWm {
         self.space.elements().find(|w| w.x11_surface() == Some(x11)).cloned()
     }
 
+    /// Compute the canvas position of an override-redirect X11 surface.
+    /// OR windows use absolute X11 root coords; we map them relative to
+    /// their parent's canvas position, or center them if no parent exists.
+    pub fn or_canvas_position(&self, or_surface: &X11Surface) -> Point<i32, Logical> {
+        let or_geo = or_surface.geometry();
+
+        if let Some(parent_id) = or_surface.is_transient_for() {
+            // Search managed windows in Space for parent
+            let parent_in_space = self.space.elements().find(|w| {
+                w.x11_surface().is_some_and(|x| x.window_id() == parent_id)
+            });
+            if let Some(parent_win) = parent_in_space {
+                let parent_canvas = self.space.element_location(parent_win).unwrap_or_default();
+                let parent_x11_loc = parent_win.x11_surface().unwrap().geometry().loc;
+                return parent_canvas + (or_geo.loc - parent_x11_loc);
+            }
+
+            // Search other OR windows (nested menus) with depth limit
+            fn find_or_parent(
+                or_list: &[X11Surface],
+                space: &smithay::desktop::Space<smithay::desktop::Window>,
+                target_id: u32,
+                depth: u32,
+            ) -> Option<Point<i32, Logical>> {
+                if depth == 0 { return None; }
+                let parent_or = or_list.iter().find(|w| w.window_id() == target_id)?;
+                let parent_geo = parent_or.geometry();
+                if let Some(grandparent_id) = parent_or.is_transient_for() {
+                    // Check Space first
+                    let gp_in_space = space.elements().find(|w| {
+                        w.x11_surface().is_some_and(|x| x.window_id() == grandparent_id)
+                    });
+                    if let Some(gp_win) = gp_in_space {
+                        let gp_canvas = space.element_location(gp_win).unwrap_or_default();
+                        let gp_x11_loc = gp_win.x11_surface().unwrap().geometry().loc;
+                        return Some(gp_canvas + (parent_geo.loc - gp_x11_loc));
+                    }
+                    // Recurse into OR list
+                    let gp_canvas = find_or_parent(or_list, space, grandparent_id, depth - 1)?;
+                    return Some(gp_canvas + (parent_geo.loc - or_list.iter()
+                        .find(|w| w.window_id() == grandparent_id)
+                        .map(|w| w.geometry().loc)
+                        .unwrap_or_default()));
+                }
+                None
+            }
+
+            if let Some(parent_canvas) = find_or_parent(
+                &self.x11_override_redirect, &self.space, parent_id, 10,
+            ) {
+                let parent_or = self.x11_override_redirect.iter()
+                    .find(|w| w.window_id() == parent_id);
+                let parent_x11_loc = parent_or.map(|w| w.geometry().loc).unwrap_or_default();
+                return parent_canvas + (or_geo.loc - parent_x11_loc);
+            }
+        }
+
+        // No transient_for: use anchor-based X11→canvas coordinate mapping.
+        // X11 OR windows position themselves in absolute root coords — find
+        // the topmost managed X11 window as an anchor to translate.
+        let anchor = self.space.elements().rev().find_map(|w| {
+            let x11 = w.x11_surface()?;
+            let canvas_loc = self.space.element_location(w)?;
+            Some((canvas_loc, x11.geometry().loc))
+        });
+        if let Some((anchor_canvas, anchor_x11)) = anchor {
+            return anchor_canvas + (or_geo.loc - anchor_x11);
+        }
+
+        // No X11 windows at all: center in viewport
+        self.active_output()
+            .and_then(|o| self.space.output_geometry(&o))
+            .map(|viewport| {
+                let cam = self.camera();
+                let z = self.zoom();
+                Point::from((
+                    (cam.x + viewport.size.w as f64 / (2.0 * z)) as i32 - or_geo.size.w / 2,
+                    (cam.y + viewport.size.h as f64 / (2.0 * z)) as i32 - or_geo.size.h / 2,
+                ))
+            })
+            .unwrap_or_default()
+    }
+
     /// Mark all active outputs as needing a redraw.
     pub fn mark_all_dirty(&mut self) {
         self.redraws_needed.extend(self.active_crtcs.iter());

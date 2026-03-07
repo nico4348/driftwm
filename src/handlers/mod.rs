@@ -153,6 +153,15 @@ impl XdgActivationHandler for DriftWm {
         &mut self.xdg_activation_state
     }
 
+    fn token_created(&mut self, _token: XdgActivationToken, data: XdgActivationTokenData) -> bool {
+        if data.serial.is_some() {
+            let now = std::time::Instant::now();
+            self.exec_cursor_show_at = Some(now + std::time::Duration::from_millis(150));
+            self.exec_cursor_deadline = Some(now + std::time::Duration::from_secs(5));
+        }
+        true
+    }
+
     fn request_activation(
         &mut self,
         _token: XdgActivationToken,
