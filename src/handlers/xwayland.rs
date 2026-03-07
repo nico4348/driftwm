@@ -1,10 +1,16 @@
 use crate::state::{CalloopData, DriftWm, FocusTarget};
+use driftwm::window_ext::WindowExt;
 use smithay::{
     delegate_xwayland_shell,
     desktop::Window,
-    reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
+    input::pointer::{CursorImageStatus, Focus, GrabStartData},
+    reexports::{
+        wayland_protocols::xdg::shell::server::xdg_toplevel,
+        wayland_server::{Resource, protocol::wl_surface::WlSurface},
+    },
     utils::{Logical, Rectangle, SERIAL_COUNTER},
     wayland::{
+        compositor::with_states,
         selection::SelectionTarget,
         seat::WaylandFocus,
         xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
@@ -14,6 +20,21 @@ use smithay::{
         X11Surface,
     },
 };
+
+use super::xdg_shell::resize_cursor;
+
+fn x11_edge_to_xdg(edge: ResizeEdge) -> xdg_toplevel::ResizeEdge {
+    match edge {
+        ResizeEdge::Top => xdg_toplevel::ResizeEdge::Top,
+        ResizeEdge::Bottom => xdg_toplevel::ResizeEdge::Bottom,
+        ResizeEdge::Left => xdg_toplevel::ResizeEdge::Left,
+        ResizeEdge::Right => xdg_toplevel::ResizeEdge::Right,
+        ResizeEdge::TopLeft => xdg_toplevel::ResizeEdge::TopLeft,
+        ResizeEdge::TopRight => xdg_toplevel::ResizeEdge::TopRight,
+        ResizeEdge::BottomLeft => xdg_toplevel::ResizeEdge::BottomLeft,
+        ResizeEdge::BottomRight => xdg_toplevel::ResizeEdge::BottomRight,
+    }
+}
 
 // ---- Calloop wrappers (X11Wm::start_wm requires D = CalloopData) ----
 
@@ -102,30 +123,41 @@ impl XwmHandler for DriftWm {
 
         let smithay_window = Window::new_x11_window(window.clone());
 
-        // X11 size is known upfront — center accounting for window size
+        // X11 size is known upfront — center accounting for window size.
+        // Check window rules for explicit positioning.
         let geo = window.geometry();
-        let pos = self
-            .active_output()
-            .and_then(|o| self.space.output_geometry(&o))
-            .map(|viewport| {
-                let cam = self.camera();
-                let z = self.zoom();
-                (
-                    (cam.x + viewport.size.w as f64 / (2.0 * z)) as i32 - geo.size.w / 2,
-                    (cam.y + viewport.size.h as f64 / (2.0 * z)) as i32 - geo.size.h / 2,
-                )
-            })
-            .unwrap_or((0, 0));
+        let class = window.class();
+        let rule = self.config.match_window_rule(&class).cloned();
+
+        let pos = if let Some(ref rule) = rule
+            && let Some((x, y)) = rule.position
+        {
+            // Rule coords: window-center, Y-up. Convert to canvas: top-left, Y-down.
+            (x - geo.size.w / 2, -y - geo.size.h / 2)
+        } else {
+            self.active_output()
+                .and_then(|o| self.space.output_geometry(&o))
+                .map(|viewport| {
+                    let cam = self.camera();
+                    let z = self.zoom();
+                    (
+                        (cam.x + viewport.size.w as f64 / (2.0 * z)) as i32 - geo.size.w / 2,
+                        (cam.y + viewport.size.h as f64 / (2.0 * z)) as i32 - geo.size.h / 2,
+                    )
+                })
+                .unwrap_or((0, 0))
+        };
 
         window
             .configure(Rectangle::from_size(geo.size))
             .ok();
 
-        self.space.map_element(smithay_window.clone(), pos, true);
+        let activate = rule.as_ref().is_none_or(|r| !r.widget);
+        self.space.map_element(smithay_window.clone(), pos, activate);
         self.space.raise_element(&smithay_window, true);
         self.enforce_below_windows();
-        // Focus and pending_center are deferred to surface_associated(),
-        // which fires once the wl_surface is paired via xwayland-shell serial.
+        // Focus, decorations, and applied_rule storage are deferred to
+        // surface_associated(), which fires once the wl_surface is paired.
     }
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
@@ -177,20 +209,42 @@ impl XwmHandler for DriftWm {
         &mut self,
         _xwm: XwmId,
         window: X11Surface,
-        _x: Option<i32>,
-        _y: Option<i32>,
+        x: Option<i32>,
+        y: Option<i32>,
         w: Option<u32>,
         h: Option<u32>,
         _reorder: Option<Reorder>,
     ) {
-        let mut geo = window.geometry();
+        let old_geo = window.geometry();
+        let mut new_geo = old_geo;
         if let Some(w) = w {
-            geo.size.w = w as i32;
+            new_geo.size.w = w as i32;
         }
         if let Some(h) = h {
-            geo.size.h = h as i32;
+            new_geo.size.h = h as i32;
         }
-        window.configure(Rectangle::from_size(geo.size)).ok();
+        // Honor position + size from the request so X11 CSD resize works
+        // from all edges. The X11 loc is internal to XWayland; we apply the
+        // delta to the compositor Space position.
+        if let Some(x) = x {
+            new_geo.loc.x = x;
+        }
+        if let Some(y) = y {
+            new_geo.loc.y = y;
+        }
+        window.configure(new_geo).ok();
+
+        // Apply X11 position delta to Space element location so left/top
+        // edge CSD resizes visually move the correct edge.
+        let dx = new_geo.loc.x - old_geo.loc.x;
+        let dy = new_geo.loc.y - old_geo.loc.y;
+        if (dx != 0 || dy != 0)
+            && let Some(smithay_window) = self.find_x11_window(&window)
+            && let Some(loc) = self.space.element_location(&smithay_window)
+        {
+            let new_loc = loc + smithay::utils::Point::from((dx, dy));
+            self.space.map_element(smithay_window, new_loc, false);
+        }
     }
 
     fn configure_notify(
@@ -202,12 +256,76 @@ impl XwmHandler for DriftWm {
     ) {
     }
 
-    fn resize_request(&mut self, _xwm: XwmId, _window: X11Surface, _button: u32, _edge: ResizeEdge) {
-        // TODO: initiate ResizeSurfaceGrab
+    fn resize_request(&mut self, _xwm: XwmId, window: X11Surface, _button: u32, edge: ResizeEdge) {
+        let Some(smithay_window) = self.find_x11_window(&window) else { return };
+        let Some(wl_surface) = smithay_window.wl_surface().map(|s| s.into_owned()) else { return };
+
+        let pointer = self.seat.get_pointer().unwrap();
+        let start_data = GrabStartData {
+            focus: Some((FocusTarget(wl_surface.clone()), pointer.current_location())),
+            button: 0x110, // BTN_LEFT
+            location: pointer.current_location(),
+        };
+
+        let xdg_edge = x11_edge_to_xdg(edge);
+        let initial_window_location = self.space.element_location(&smithay_window).unwrap();
+        let initial_window_size = smithay_window.geometry().size;
+
+        // Store resize state for commit() repositioning
+        with_states(&wl_surface, |states| {
+            states
+                .data_map
+                .get_or_insert(|| std::cell::RefCell::new(crate::grabs::ResizeState::Idle))
+                .replace(crate::grabs::ResizeState::Resizing {
+                    edges: xdg_edge,
+                    initial_window_location,
+                    initial_window_size,
+                });
+        });
+
+        self.grab_cursor = true;
+        self.cursor_status = CursorImageStatus::Named(resize_cursor(xdg_edge));
+
+        let output = self.active_output().unwrap();
+        let serial = SERIAL_COUNTER.next_serial();
+        let grab = crate::grabs::ResizeSurfaceGrab {
+            start_data,
+            window: smithay_window,
+            edges: xdg_edge,
+            initial_window_location,
+            initial_window_size,
+            last_window_size: initial_window_size,
+            output,
+            last_clamped_location: pointer.current_location(),
+            last_x11_configure: None,
+        };
+        pointer.set_grab(self, grab, serial, Focus::Clear);
     }
 
-    fn move_request(&mut self, _xwm: XwmId, _window: X11Surface, _button: u32) {
-        // TODO: initiate MoveSurfaceGrab
+    fn move_request(&mut self, _xwm: XwmId, window: X11Surface, _button: u32) {
+        let Some(smithay_window) = self.find_x11_window(&window) else { return };
+        let Some(wl_surface) = smithay_window.wl_surface().map(|s| s.into_owned()) else { return };
+
+        if driftwm::config::applied_rule(&wl_surface).is_some_and(|r| r.widget) {
+            return;
+        }
+
+        let pointer = self.seat.get_pointer().unwrap();
+        let start_data = GrabStartData {
+            focus: Some((FocusTarget(wl_surface), pointer.current_location())),
+            button: 0x110, // BTN_LEFT
+            location: pointer.current_location(),
+        };
+
+        let initial_window_location = self.space.element_location(&smithay_window).unwrap();
+        let grab = crate::grabs::MoveSurfaceGrab::new(
+            start_data,
+            smithay_window,
+            initial_window_location,
+            self.active_output().unwrap(),
+        );
+        let serial = SERIAL_COUNTER.next_serial();
+        pointer.set_grab(self, grab, serial, Focus::Clear);
     }
 
     fn allow_selection_access(&mut self, _xwm: XwmId, _sel: SelectionTarget) -> bool {
@@ -241,16 +359,62 @@ impl XWaylandShellHandler for DriftWm {
     fn surface_associated(&mut self, _xwm: XwmId, wl_surface: WlSurface, surface: X11Surface) {
         tracing::debug!("X11 surface associated: {:?}", surface.class());
 
-        // Only act if this window is in our space (was map_window_request'd)
-        if self.find_x11_window(&surface).is_none() {
+        let Some(smithay_window) = self.find_x11_window(&surface) else {
             return;
+        };
+
+        // Apply window rules — store in wl_surface data_map (now available)
+        let class = surface.class();
+        let rule = self.config.match_window_rule(&class).cloned();
+        if let Some(ref rule) = rule {
+            let applied = driftwm::config::AppliedWindowRule {
+                widget: rule.widget,
+                no_focus: rule.no_focus,
+                decoration: rule.decoration.clone(),
+            };
+            with_states(&wl_surface, |states| {
+                states.data_map.insert_if_missing_threadsafe(|| {
+                    std::sync::Mutex::new(applied.clone())
+                });
+                *states.data_map.get::<std::sync::Mutex<driftwm::config::AppliedWindowRule>>()
+                    .unwrap().lock().unwrap() = applied;
+            });
         }
 
-        // X11 windows are already centered at map time (size is known upfront),
-        // so no pending_center needed. Just set focus now that the wl_surface exists.
-        let serial = SERIAL_COUNTER.next_serial();
-        let keyboard = self.seat.get_keyboard().unwrap();
-        keyboard.set_focus(self, Some(FocusTarget(wl_surface)), serial);
+        // SSD decorations: check MOTIF hints + window rule overrides
+        let wants_ssd = smithay_window.wants_ssd();
+        let rule_forces_ssd = rule.as_ref()
+            .is_some_and(|r| r.decoration == driftwm::config::DecorationMode::Server);
+        let rule_forces_none = rule.as_ref()
+            .is_some_and(|r| r.decoration == driftwm::config::DecorationMode::None);
+
+        if (wants_ssd || rule_forces_ssd) && !rule_forces_none {
+            let geo = smithay_window.geometry();
+            if geo.size.w > 0 && !self.decorations.contains_key(&wl_surface.id()) {
+                let deco = crate::decorations::WindowDecoration::new(
+                    geo.size.w, true, &self.config.decorations,
+                );
+                self.decorations.insert(wl_surface.id(), deco);
+                self.pending_ssd.insert(wl_surface.id());
+            }
+        }
+
+        // Focus — skip for widgets and no_focus windows
+        let should_focus = rule.as_ref().is_none_or(|r| !r.widget && !r.no_focus);
+        if should_focus {
+            let serial = SERIAL_COUNTER.next_serial();
+            let keyboard = self.seat.get_keyboard().unwrap();
+            keyboard.set_focus(self, Some(FocusTarget(wl_surface)), serial);
+        } else {
+            // Widget/no_focus: refocus previous window if this stole focus
+            self.focus_history.retain(|w| w != &smithay_window);
+            if let Some(prev) = self.focus_history.first().cloned() {
+                let serial = SERIAL_COUNTER.next_serial();
+                let keyboard = self.seat.get_keyboard().unwrap();
+                let focus = prev.wl_surface().map(|s| FocusTarget(s.into_owned()));
+                keyboard.set_focus(self, focus, serial);
+            }
+        }
     }
 }
 

@@ -10,7 +10,7 @@ use smithay::{
         },
         gles::{GlesRenderer, Uniform, UniformName, UniformType, element::PixelShaderElement},
     },
-    input::pointer::CursorImageStatus,
+    input::pointer::{CursorImageStatus, CursorImageSurfaceData},
     output::Output,
     utils::{Logical, Physical, Point, Rectangle, Scale},
 };
@@ -25,6 +25,8 @@ use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Size, Transform};
 
 use smithay::reexports::wayland_server::Resource;
+use smithay::utils::IsAlive;
+use smithay::wayland::compositor::with_states;
 use smithay::wayland::seat::WaylandFocus;
 
 use driftwm::canvas::{self, CanvasPos, canvas_to_screen};
@@ -36,6 +38,7 @@ render_elements! {
     Window=RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
     Layer=WaylandSurfaceRenderElement<GlesRenderer>,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
+    CursorSurface=smithay::backend::renderer::element::Wrap<WaylandSurfaceRenderElement<GlesRenderer>>,
 }
 
 // Shadow and Decoration share inner types with Background and Tile respectively.
@@ -227,24 +230,16 @@ pub fn build_layer_elements(
 }
 
 /// Resolve which xcursor name to load for the current cursor status.
-pub fn cursor_icon_name(status: &CursorImageStatus) -> Option<&'static str> {
-    match status {
-        CursorImageStatus::Hidden => None,
-        CursorImageStatus::Named(icon) => Some(icon.name()),
-        // Client-provided surface cursor — fall back to default for now
-        CursorImageStatus::Surface(_) => Some("default"),
-    }
-}
-
 /// Build the cursor render element(s) for the current frame.
 /// `camera` and `zoom` are from the output being rendered.
+/// Returns `OutputRenderElements` — either xcursor memory buffers or client surface elements.
 pub fn build_cursor_elements(
     state: &mut crate::state::DriftWm,
     renderer: &mut GlesRenderer,
     camera: Point<f64, smithay::utils::Logical>,
     zoom: f64,
     alpha: f32,
-) -> Vec<MemoryRenderBufferRenderElement<GlesRenderer>> {
+) -> Vec<OutputRenderElements> {
     if alpha <= 0.0 {
         return vec![];
     }
@@ -254,12 +249,51 @@ pub fn build_cursor_elements(
     let screen_pos = canvas_to_screen(CanvasPos(canvas_pos), camera, zoom).0;
     let physical_pos: Point<f64, Physical> = (screen_pos.x, screen_pos.y).into();
 
-    // Extract cursor name before borrowing state mutably for load_xcursor
-    let Some(name) = cursor_icon_name(&state.cursor_status) else {
-        return vec![];
-    };
+    // Separate the status check from mutable state access (Rust 2024 borrow rules)
+    let status = state.cursor_status.clone();
+    match status {
+        CursorImageStatus::Hidden => vec![],
+        CursorImageStatus::Surface(ref surface) => {
+            if !surface.alive() {
+                state.cursor_status = CursorImageStatus::default_named();
+                return build_xcursor_elements(state, renderer, physical_pos, "default", alpha);
+            }
+            let hotspot = with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<CursorImageSurfaceData>()
+                    .map(|d| d.lock().unwrap().hotspot)
+                    .unwrap_or_default()
+            });
+            let pos: Point<i32, Physical> = (
+                (physical_pos.x - hotspot.x as f64) as i32,
+                (physical_pos.y - hotspot.y as f64) as i32,
+            ).into();
+            let elems: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                smithay::backend::renderer::element::surface::render_elements_from_surface_tree(
+                    renderer,
+                    surface,
+                    pos,
+                    Scale::from(1.0),
+                    alpha,
+                    Kind::Cursor,
+                );
+            elems.into_iter().map(|e| OutputRenderElements::CursorSurface(e.into())).collect()
+        }
+        CursorImageStatus::Named(icon) => {
+            build_xcursor_elements(state, renderer, physical_pos, icon.name(), alpha)
+        }
+    }
+}
 
-    // Try loading by CSS name, fall back to "default"
+/// Build xcursor memory buffer elements for a named cursor icon.
+fn build_xcursor_elements(
+    state: &mut crate::state::DriftWm,
+    renderer: &mut GlesRenderer,
+    physical_pos: Point<f64, Physical>,
+    name: &'static str,
+    alpha: f32,
+) -> Vec<OutputRenderElements> {
     let loaded = state.load_xcursor(name).is_some();
     if !loaded && state.load_xcursor("default").is_none() {
         return vec![];
@@ -298,7 +332,7 @@ pub fn build_cursor_elements(
         None,
         Kind::Cursor,
     ) {
-        Ok(elem) => vec![elem],
+        Ok(elem) => vec![OutputRenderElements::Cursor(elem)],
         Err(_) => vec![],
     }
 }
@@ -342,7 +376,7 @@ fn compose_lock_frame(
     state: &crate::state::DriftWm,
     renderer: &mut GlesRenderer,
     output: &Output,
-    _cursor_elements: Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+    _cursor_elements: Vec<OutputRenderElements>,
 ) -> Vec<OutputRenderElements> {
     let mut elements = Vec::new();
 
@@ -368,7 +402,7 @@ pub fn compose_frame(
     state: &mut crate::state::DriftWm,
     renderer: &mut GlesRenderer,
     output: &Output,
-    cursor_elements: Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+    cursor_elements: Vec<OutputRenderElements>,
 ) -> Vec<OutputRenderElements> {
     // Session lock: render only lock surface (or black) + cursor
     if !matches!(state.session_lock, crate::state::SessionLock::Unlocked) {
@@ -611,7 +645,7 @@ pub fn compose_frame(
             + bg_elements.len()
             + background_layer_elements.len(),
     );
-    all_elements.extend(cursor_elements.into_iter().map(OutputRenderElements::Cursor));
+    all_elements.extend(cursor_elements);
     all_elements.extend(overlay_elements);
     all_elements.extend(top_elements);
     all_elements.extend(zoomed_normal);
@@ -856,7 +890,7 @@ pub fn render_screencopy(
         } else {
             elements
                 .iter()
-                .filter(|e| !matches!(e, OutputRenderElements::Cursor(_)))
+                .filter(|e| !matches!(e, OutputRenderElements::Cursor(_) | OutputRenderElements::CursorSurface(_)))
                 .collect()
         };
 
@@ -1023,7 +1057,7 @@ pub fn render_capture_frames(
         } else {
             elements
                 .iter()
-                .filter(|e| !matches!(e, OutputRenderElements::Cursor(_)))
+                .filter(|e| !matches!(e, OutputRenderElements::Cursor(_) | OutputRenderElements::CursorSurface(_)))
                 .collect()
         };
 
@@ -1135,6 +1169,14 @@ pub fn post_render(state: &mut crate::state::DriftWm, output: &Output) {
         cl.surface.send_frame(output, time, Some(Duration::ZERO), |_, _| {
             Some(output.clone())
         });
+    }
+
+    // Cursor surface frame callbacks (animated cursors need these to advance)
+    if let CursorImageStatus::Surface(ref surface) = state.cursor_status {
+        smithay::desktop::utils::send_frames_surface_tree(
+            surface, output, time, Some(Duration::ZERO),
+            |_, _| Some(output.clone()),
+        );
     }
 
     // Lock surface frame callback

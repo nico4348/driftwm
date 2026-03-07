@@ -7,6 +7,9 @@ pub trait WindowExt {
     fn send_close(&self);
     fn app_id_or_class(&self) -> Option<String>;
     fn window_title(&self) -> Option<String>;
+    /// Whether the window wants compositor-drawn (server-side) decorations.
+    /// For X11: checks MOTIF hints. For Wayland: checks xdg-decoration mode.
+    fn wants_ssd(&self) -> bool;
     fn enter_fullscreen_configure(&self, size: Size<i32, Logical>);
     fn exit_fullscreen_configure(&self);
 }
@@ -45,6 +48,20 @@ impl WindowExt for Window {
             })
         } else {
             self.x11_surface().map(|x11| x11.title())
+        }
+    }
+
+    fn wants_ssd(&self) -> bool {
+        if let Some(_toplevel) = self.toplevel() {
+            // Wayland: SSD is negotiated via xdg-decoration protocol,
+            // handled in handlers/mod.rs (XdgDecorationHandler). Not checked here.
+            false
+        } else if let Some(x11) = self.x11_surface() {
+            // is_decorated() = true means CLIENT draws decorations (no SSD needed)
+            // is_decorated() = false means no MOTIF hints or app wants WM decorations
+            !x11.is_decorated()
+        } else {
+            false
         }
     }
 

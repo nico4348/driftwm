@@ -47,6 +47,8 @@ pub struct ResizeSurfaceGrab {
     pub last_window_size: Size<i32, Logical>,
     pub output: Output,
     pub last_clamped_location: Point<f64, Logical>,
+    /// Throttle X11 configures to avoid overwhelming the client (X11 redraws synchronously).
+    pub last_x11_configure: Option<std::time::Instant>,
 }
 
 /// Check if `edges` includes a horizontal/vertical component via raw bit values.
@@ -133,6 +135,18 @@ impl PointerGrab<DriftWm> for ResizeSurfaceGrab {
                     state.states.set(xdg_toplevel::State::Resizing);
                 });
                 toplevel.send_pending_configure();
+            } else if let Some(x11) = self.window.x11_surface() {
+                // Throttle X11 configures to ~60fps — X11 apps redraw synchronously
+                let now = std::time::Instant::now();
+                let throttle_ok = self.last_x11_configure.is_none_or(|t| {
+                    now.duration_since(t) >= std::time::Duration::from_millis(16)
+                });
+                if throttle_ok {
+                    self.last_x11_configure = Some(now);
+                    let mut geo = x11.geometry();
+                    geo.size = new_size;
+                    x11.configure(geo).ok();
+                }
             }
         }
 
@@ -153,12 +167,17 @@ impl PointerGrab<DriftWm> for ResizeSurfaceGrab {
     ) {
         handle.button(data, event);
         if handle.current_pressed().is_empty() {
-            // Grab released — transition to WaitingForLastCommit
+            // Grab released — unset Resizing state (Wayland only) and
+            // transition to WaitingForLastCommit for position adjustment
             if let Some(toplevel) = self.window.toplevel() {
                 toplevel.with_pending_state(|state| {
                     state.states.unset(xdg_toplevel::State::Resizing);
                 });
                 toplevel.send_pending_configure();
+            } else if let Some(x11) = self.window.x11_surface() {
+                let mut geo = x11.geometry();
+                geo.size = self.last_window_size;
+                x11.configure(geo).ok();
             }
 
             let Some(surface) = self.window.wl_surface().map(|s| s.into_owned()) else {

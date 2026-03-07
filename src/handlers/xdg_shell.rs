@@ -279,6 +279,7 @@ impl XdgShellHandler for DriftWm {
             last_window_size: initial_window_size,
             output,
             last_clamped_location,
+            last_x11_configure: None,
         };
         pointer.set_grab(self, grab, serial, Focus::Clear);
     }
@@ -389,7 +390,7 @@ impl DriftWm {
 }
 
 /// Map resize edge to the appropriate directional cursor icon.
-fn resize_cursor(edges: xdg_toplevel::ResizeEdge) -> CursorIcon {
+pub(crate) fn resize_cursor(edges: xdg_toplevel::ResizeEdge) -> CursorIcon {
     match edges {
         xdg_toplevel::ResizeEdge::Top => CursorIcon::NResize,
         xdg_toplevel::ResizeEdge::Bottom => CursorIcon::SResize,

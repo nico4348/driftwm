@@ -43,6 +43,7 @@ pub enum GestureState {
         initial_size: Size<i32, Logical>,
         last_size: Size<i32, Logical>,
         cumulative: Point<f64, Logical>,
+        last_x11_configure: Option<std::time::Instant>,
     },
     /// Threshold swipe — accumulate delta, detect direction, fire once.
     SwipeThreshold {
@@ -329,6 +330,7 @@ impl DriftWm {
                 initial_size,
                 last_size,
                 cumulative,
+                last_x11_configure,
                 ..
             } => {
                 // Force focused_output back if it drifted during resize
@@ -390,6 +392,17 @@ impl DriftWm {
                             state.states.set(xdg_toplevel::State::Resizing);
                         });
                         toplevel.send_pending_configure();
+                    } else if let Some(x11) = window.x11_surface() {
+                        let now = std::time::Instant::now();
+                        let throttle_ok = last_x11_configure.as_ref().is_none_or(|t| {
+                            now.duration_since(*t) >= std::time::Duration::from_millis(16)
+                        });
+                        if throttle_ok {
+                            *last_x11_configure = Some(now);
+                            let mut geo = x11.geometry();
+                            geo.size = new_size;
+                            x11.configure(geo).ok();
+                        }
                     }
                 }
 
@@ -455,6 +468,8 @@ impl DriftWm {
                         state.states.unset(xdg_toplevel::State::Resizing);
                     });
                     toplevel.send_pending_configure();
+                } else if let Some(x11) = window.x11_surface() {
+                    x11.configure(window.geometry()).ok();
                 }
 
                 if let Some(surface) = window.wl_surface().map(|s| s.into_owned()) {
@@ -803,6 +818,7 @@ impl DriftWm {
             initial_size,
             last_size: initial_size,
             cumulative: Point::from((0.0, 0.0)),
+            last_x11_configure: None,
         });
     }
 
