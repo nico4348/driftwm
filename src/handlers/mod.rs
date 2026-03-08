@@ -168,6 +168,16 @@ impl XdgActivationHandler for DriftWm {
         token_data: XdgActivationTokenData,
         surface: WlSurface,
     ) {
+        // Same client activating itself (e.g. Telegram switching chats) — cancel loading cursor
+        if let Some(req_surface) = &token_data.surface {
+            let req_client = self.display_handle.get_client(req_surface.id()).ok();
+            let act_client = self.display_handle.get_client(surface.id()).ok();
+            if req_client.is_some() && req_client == act_client {
+                self.exec_cursor_show_at = None;
+                self.exec_cursor_deadline = None;
+            }
+        }
+
         // Only honor tokens created from user input (has a serial).
         // Tokens without a serial are spontaneous attention requests from
         // background apps — ignore those to prevent focus stealing.
