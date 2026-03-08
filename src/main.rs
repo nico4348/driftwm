@@ -94,26 +94,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     unsafe { std::env::set_var("XDG_SESSION_TYPE", "wayland") };
     unsafe { std::env::set_var("XDG_CURRENT_DESKTOP", "driftwm") };
     unsafe { std::env::set_var("MOZ_ENABLE_WAYLAND", "1") };
-    unsafe { std::env::set_var("QT_QPA_PLATFORM", "wayland") };
-    unsafe { std::env::set_var("SDL_VIDEODRIVER", "wayland") };
+    unsafe { std::env::set_var("QT_QPA_PLATFORM", "wayland;xcb") };
+    unsafe { std::env::set_var("SDL_VIDEODRIVER", "wayland,x11") };
     unsafe { std::env::set_var("GDK_BACKEND", "wayland,x11") };
     unsafe { std::env::set_var("ELECTRON_OZONE_PLATFORM_HINT", "wayland") };
     unsafe { std::env::set_var("XDG_SESSION_CLASS", "user") };
     unsafe { std::env::set_var("XDG_SESSION_DESKTOP", "driftwm") };
 
-    // Import all environment (including PAM-set vars like SSH_AUTH_SOCK)
-    // into systemd and D-Bus so child processes and D-Bus-activated apps
-    // can find our Wayland socket, keyring, etc.
-    match std::process::Command::new("/bin/sh")
-        .args(["-c", "systemctl --user import-environment; hash dbus-update-activation-environment 2>/dev/null && dbus-update-activation-environment --all"])
-        .spawn()
+    // Export only session-level vars to systemd and D-Bus.
+    // Toolkit hints (MOZ_ENABLE_WAYLAND, QT_QPA_PLATFORM, etc.) stay in our
+    // process env for direct child processes but should NOT leak to
+    // D-Bus-activated services or override PAM-set vars.
     {
-        Ok(mut child) => {
-            if let Err(e) = child.wait() {
-                tracing::warn!("Error waiting for environment import: {e}");
+        let session_vars = "WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP";
+        let cmd = format!(
+            "systemctl --user import-environment {session_vars}; \
+             hash dbus-update-activation-environment 2>/dev/null && \
+             dbus-update-activation-environment {session_vars}"
+        );
+        match std::process::Command::new("/bin/sh")
+            .args(["-c", &cmd])
+            .spawn()
+        {
+            Ok(mut child) => {
+                if let Err(e) = child.wait() {
+                    tracing::warn!("Error waiting for environment import: {e}");
+                }
             }
+            Err(e) => tracing::warn!("Failed to import environment: {e}"),
         }
-        Err(e) => tracing::warn!("Failed to import environment: {e}"),
     }
 
     event_loop

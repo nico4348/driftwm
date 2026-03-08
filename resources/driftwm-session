@@ -1,0 +1,34 @@
+#!/bin/sh
+# driftwm-session — launched by display manager (GDM) instead of bare driftwm.
+# Re-execs through login shell to pick up .profile / PAM env vars,
+# then starts gnome-keyring-daemon to ensure the login keyring is unlocked.
+
+if [ -z "$_DRIFTWM_WRAPPER" ]; then
+    export _DRIFTWM_WRAPPER=1
+    exec "$SHELL" -l -c "$0 $@"
+fi
+
+# Start/reconnect gnome-keyring and capture its env vars.
+# --start is idempotent: if the daemon is already running (PAM-started),
+# it just prints the env vars. This re-sends the unlock token that may
+# have been lost during GDM's greeter->session transition.
+eval $(gnome-keyring-daemon --start --components=pkcs11,secrets,ssh)
+export SSH_AUTH_SOCK GNOME_KEYRING_CONTROL
+
+# Notify systemd that the graphical session is starting, then active.
+# Services with PartOf=graphical-session.target (waybar, portals, etc.)
+# will auto-start and auto-stop with the compositor.
+systemctl --user start graphical-session-pre.target
+systemctl --user start graphical-session.target
+
+# Run driftwm (not exec — we need the shell to survive for cleanup).
+driftwm
+STATUS=$?
+
+# Compositor exited — tear down the graphical session so dependent
+# services stop cleanly instead of becoming orphans.
+systemctl --user stop graphical-session.target
+systemctl --user stop graphical-session-pre.target
+systemctl --user unset-environment WAYLAND_DISPLAY DISPLAY
+
+exit $STATUS

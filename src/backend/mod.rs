@@ -45,6 +45,16 @@ pub fn spawn_xwayland(
             tracing::info!("XWayland ready on :{display_number}");
             // SAFETY: no other threads mutate env vars concurrently in the compositor
             unsafe { std::env::set_var("DISPLAY", format!(":{display_number}")); }
+            // Export DISPLAY to systemd/D-Bus so D-Bus-activated X11 apps can find XWayland
+            if let Err(e) = std::process::Command::new("/bin/sh")
+                .args(["-c",
+                    "systemctl --user import-environment DISPLAY; \
+                     hash dbus-update-activation-environment 2>/dev/null && \
+                     dbus-update-activation-environment DISPLAY"])
+                .spawn()
+            {
+                tracing::warn!("Failed to export DISPLAY: {e}");
+            }
             data.state.x11_display = Some(display_number);
             data.state.xwayland_client = Some(client.clone());
 
