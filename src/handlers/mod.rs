@@ -13,7 +13,7 @@ use smithay::{
     delegate_output, delegate_pointer_constraints, delegate_presentation,
     delegate_pointer_gestures, delegate_primary_selection, delegate_relative_pointer,
     delegate_seat, delegate_viewporter,
-    delegate_xdg_activation,
+    delegate_single_pixel_buffer, delegate_xdg_activation,
     input::{
         Seat, SeatHandler, SeatState,
         pointer::{CursorIcon, CursorImageStatus, PointerHandle},
@@ -264,6 +264,7 @@ impl IdleInhibitHandler for DriftWm {
 delegate_idle_inhibit!(DriftWm);
 
 delegate_presentation!(DriftWm);
+delegate_single_pixel_buffer!(DriftWm);
 
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::xdg::ToplevelSurface;
