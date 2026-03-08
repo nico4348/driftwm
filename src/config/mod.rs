@@ -493,6 +493,14 @@ fn parse_window_rule(r: WindowRuleFile) -> Option<WindowRule> {
         app_id: r.app_id,
         title: r.title,
         position: r.position.map(|[x, y]| (x, y)),
+        size: r.size.and_then(|[w, h]| {
+            if w > 0 && h > 0 {
+                Some((w, h))
+            } else {
+                tracing::warn!("Window rule size must be positive, got [{w}, {h}]");
+                None
+            }
+        }),
         widget: r.widget,
         no_focus: r.no_focus,
         decoration,

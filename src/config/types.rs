@@ -345,6 +345,7 @@ pub struct WindowRule {
     pub app_id: Option<String>,
     pub title: Option<String>,
     pub position: Option<(i32, i32)>,
+    pub size: Option<(i32, i32)>,
     /// Widget windows are pinned (immovable), excluded from navigation/alt-tab,
     /// and always stacked below normal windows.
     pub widget: bool,

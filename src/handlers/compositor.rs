@@ -157,6 +157,13 @@ impl CompositorHandler for DriftWm {
                         title.as_deref().unwrap_or(""),
                     ).cloned();
 
+                    // Check if rule side-effects were already applied on a
+                    // previous commit (happens when the first commit had zero
+                    // size and we re-inserted into pending_center for retry).
+                    let already_applied = with_states(&root, |states| {
+                        states.data_map.get::<std::sync::Mutex<driftwm::config::AppliedWindowRule>>().is_some()
+                    });
+
                     if let Some(ref rule) = rule {
                         // Store applied rule in surface data_map
                         let applied = driftwm::config::AppliedWindowRule {
@@ -173,7 +180,23 @@ impl CompositorHandler for DriftWm {
                         });
                     }
 
-                    if has_size {
+                    // Force size on first commit: send a configure with the
+                    // rule's size, re-insert into pending_center, and wait for
+                    // the client to re-render at the new dimensions.
+                    if let Some(ref rule) = rule
+                        && let Some((w, h)) = rule.size
+                        && self.pending_size.insert(root.clone())
+                    {
+                        if let Some(toplevel) = window.toplevel() {
+                            toplevel.with_pending_state(|state| {
+                                state.size = Some(smithay::utils::Size::from((w, h)));
+                            });
+                            toplevel.send_configure();
+                            self.pending_center.insert(root.clone());
+                        } else {
+                            self.pending_size.remove(&root);
+                        }
+                    } else if has_size {
                         // Position: rule coords are window-center with Y-up convention
                         // (positive = above origin). Negate Y for internal canvas coords.
                         let pos = if let Some(ref rule) = rule
@@ -199,7 +222,7 @@ impl CompositorHandler for DriftWm {
                         self.space.map_element(window.clone(), pos, activate);
                     }
 
-                    if let Some(ref rule) = rule {
+                    if let Some(ref rule) = rule && !already_applied {
                         // Decoration override: none/server → force SSD on the protocol level
                         if rule.decoration != driftwm::config::DecorationMode::Client {
                             use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
@@ -259,6 +282,7 @@ impl CompositorHandler for DriftWm {
                             self.cursor_status =
                                 smithay::input::pointer::CursorImageStatus::default_named();
                         }
+                        self.pending_size.remove(&root);
                     } else {
                         // No size yet — retry next commit
                         self.pending_center.insert(root.clone());

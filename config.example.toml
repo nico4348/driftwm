@@ -230,13 +230,15 @@
 # scale = 1.0
 # mode = "1920x1080@60"
 
-# Window rules: match windows by app_id and apply behavioral overrides.
+# Window rules: match windows by app_id and/or title and apply overrides.
+# At least one of app_id or title is required. Both support * glob.
 # To find an app's app_id: cat $XDG_RUNTIME_DIR/driftwm/state (see "windows=" line)
-# Supports simple glob: "drift-*" matches any app_id starting with "drift-".
 #
-# Fields (all optional except app_id):
-#   app_id     — app_id to match (required, supports * glob)
+# Fields:
+#   app_id     — app_id to match (optional, supports * glob)
+#   title      — window title to match (optional, supports * glob)
 #   position   — [x, y] canvas coordinates to place the window
+#   size       — [width, height] to force window dimensions
 #   widget     — true: pinned (immovable), below normal windows, excluded from navigation (default: false)
 #   no_focus   — true: completely inert to input — clicks/scrolls pass through (default: false)
 #   decoration — "client" (default), "server", or "none" (borderless)
@@ -247,3 +249,9 @@
 # widget = true
 # no_focus = true
 # decoration = "none"
+#
+# # Hide iced/libcosmic utility windows (same app_id as main window)
+# [[window_rules]]
+# title = "winit window"
+# widget = true
+# no_focus = true

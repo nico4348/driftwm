@@ -320,6 +320,7 @@ pub struct DriftWm {
 
     // -- global: window management --
     pub pending_center: HashSet<WlSurface>,
+    pub pending_size: HashSet<WlSurface>,
 
     // -- global: focus/navigation --
     pub focus_history: Vec<Window>,
@@ -524,6 +525,7 @@ impl DriftWm {
             canvas_layers: Vec::new(),
             config,
             pending_center: HashSet::new(),
+            pending_size: HashSet::new(),
             focus_history: Vec::new(),
             cycle_state: None,
             held_action: None,
@@ -1041,17 +1043,23 @@ impl DriftWm {
         }
 
         // Window list: app_id of each toplevel (focused window first)
+        // Falls back to X11 class for XWayland windows.
         let focused_surface = self.seat.get_keyboard().and_then(|kb| kb.current_focus());
         let mut app_ids: Vec<String> = Vec::new();
         for window in self.space.elements() {
             let Some(surface) = window.wl_surface() else { continue; };
-            let app_id = smithay::wayland::compositor::with_states(&surface, |states| {
+            let mut app_id = smithay::wayland::compositor::with_states(&surface, |states| {
                 states
                     .data_map
                     .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
                     .and_then(|d| d.lock().ok())
                     .and_then(|guard| guard.app_id.clone())
             }).unwrap_or_default();
+            if app_id.is_empty() {
+                if let Some(x11) = window.x11_surface() {
+                    app_id = x11.class();
+                }
+            }
             if !app_id.is_empty() {
                 let is_focused = focused_surface.as_ref().is_some_and(|f| f.0 == *surface);
                 if is_focused {
@@ -1063,6 +1071,21 @@ impl DriftWm {
         }
         if !app_ids.is_empty() {
             content += &format!("windows={}\n", app_ids.join(","));
+        }
+
+        // Layer shell surfaces (waybar, notifications, etc.)
+        let mut layers: Vec<String> = Vec::new();
+        for output in self.space.outputs() {
+            let layer_map = smithay::desktop::layer_map_for_output(output);
+            for layer in layer_map.layers() {
+                let ns = layer.namespace().to_string();
+                if !ns.is_empty() && !layers.contains(&ns) {
+                    layers.push(ns);
+                }
+            }
+        }
+        if !layers.is_empty() {
+            content += &format!("layers={}\n", layers.join(","));
         }
 
         // Per-output camera/zoom state

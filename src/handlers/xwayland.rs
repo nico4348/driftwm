@@ -57,10 +57,19 @@ impl XwmHandler for DriftWm {
 
         // X11 size is known upfront — center accounting for window size.
         // Check window rules for explicit positioning.
-        let geo = window.geometry();
         let class = window.class();
         let title = window.title();
         let rule = self.config.match_window_rule(&class, &title).cloned();
+
+        // Force size if window rule specifies it (X11 configure is synchronous)
+        if let Some(ref rule) = rule
+            && let Some((w, h)) = rule.size
+        {
+            let mut rect = window.geometry();
+            rect.size = smithay::utils::Size::from((w, h));
+            window.configure(rect).ok();
+        }
+        let geo = window.geometry();
 
         let pos = if let Some(ref rule) = rule
             && let Some((x, y)) = rule.position
@@ -81,9 +90,10 @@ impl XwmHandler for DriftWm {
                 .unwrap_or((0, 0))
         };
 
-        window
-            .configure(Rectangle::from_size(geo.size))
-            .ok();
+        // Only send configure if no rule size was applied (avoids redundant call)
+        if rule.as_ref().is_none_or(|r| r.size.is_none()) {
+            window.configure(Rectangle::from_size(geo.size)).ok();
+        }
 
         let activate = rule.as_ref().is_none_or(|r| !r.widget);
         self.space.map_element(smithay_window.clone(), pos, activate);
@@ -115,6 +125,7 @@ impl XwmHandler for DriftWm {
                 self.decorations.remove(&wl_surface.id());
                 self.pending_ssd.remove(&wl_surface.id());
                 self.pending_center.remove(&*wl_surface);
+                self.pending_size.remove(&*wl_surface);
             }
 
             let fs_output = self

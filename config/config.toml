@@ -124,3 +124,7 @@ no_focus = false
 title = "winit window"
 widget = true
 no_focus = true
+
+[[window_rules]]
+app_id = "com.system76.CosmicSettings"
+size=[500, 725]
