@@ -1012,10 +1012,14 @@ fn process_blur_requests(
 
     let out_buf_size = output_size.to_logical(1).to_buffer(1, Transform::Normal);
 
-    // Shared full-output FBO for behind-content rendering
-    let Ok(mut bg_tex) = Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, out_buf_size)
-    else {
-        return;
+    // Shared full-output FBO for behind-content rendering — cached on DriftWm, reused if size matches
+    let mut bg_tex = match state.blur_bg_fbo.take() {
+        Some((tex, cached_size)) if cached_size == output_size => tex,
+        _ => {
+            let Ok(t) = Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, out_buf_size)
+            else { return };
+            t
+        }
     };
 
     let down_shader = state.blur_down_shader.clone().unwrap();
@@ -1110,13 +1114,6 @@ fn process_blur_requests(
         let surf_end = (surf_start + req.elem_count).min(all_elements.len());
         {
             let Ok(mut target) = renderer.bind(&mut bg_tex) else { continue };
-            // Explicitly clear to transparent first — render_output may skip clearing
-            // when elements fully cover the output.
-            {
-                let Ok(mut frame) = renderer.render(&mut target, output_size, Transform::Normal) else { continue };
-                let _ = frame.clear(Color32F::TRANSPARENT, &[Rectangle::from_size(output_size)]);
-                let _ = frame.finish();
-            }
             let mut dt = OutputDamageTracker::new(output_size, output_scale, Transform::Normal);
             let _ = dt.render_output(
                 renderer,
@@ -1211,6 +1208,9 @@ fn process_blur_requests(
         all_elements.insert(insert_idx, OutputRenderElements::Blur(blur_elem));
         index_shift += 1;
     }
+
+    // Cache bg_tex back for next frame
+    state.blur_bg_fbo = Some((bg_tex, output_size));
 }
 
 /// Which element group a blur request belongs to — determines its prefix offset.

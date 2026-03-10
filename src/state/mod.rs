@@ -273,6 +273,8 @@ pub struct DriftWm {
     pub blur_up_shader: Option<GlesTexProgram>,
     pub blur_mask_shader: Option<GlesTexProgram>,
     pub blur_cache: HashMap<smithay::reexports::wayland_server::backend::ObjectId, crate::render::BlurCache>,
+    /// Cached full-output FBO for blur behind-content rendering — reused if output size matches.
+    pub blur_bg_fbo: Option<(smithay::backend::renderer::gles::GlesTexture, Size<i32, smithay::utils::Physical>)>,
     // -- per-output: cached render elements (!Send, stays on DriftWm) --
     pub cached_bg_elements: HashMap<String, PixelShaderElement>,
     // -- global: background tile (loaded once, shared) --
@@ -508,6 +510,7 @@ impl DriftWm {
             blur_up_shader: None,
             blur_mask_shader: None,
             blur_cache: HashMap::new(),
+            blur_bg_fbo: None,
             cached_bg_elements: HashMap::new(),
             background_tile: None,
             dmabuf_state: DmabufState::new(),

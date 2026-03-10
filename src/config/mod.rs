@@ -17,7 +17,10 @@ use smithay::input::keyboard::{Keysym, ModifiersState};
 use smithay::utils::{Logical, Point, Transform};
 
 use defaults::{default_bindings, default_gesture_bindings, default_mouse_bindings};
-use toml::{ConfigFile, DecorationFileConfig, EffectsFileConfig, OutputRuleFile, WindowRuleFile, expand_tilde};
+use toml::{
+    ConfigFile, DecorationFileConfig, EffectsFileConfig, OutputRuleFile, WindowRuleFile,
+    expand_tilde,
+};
 
 /// Env vars the compositor sets as toolkit fallbacks.
 /// `[env]` config entries take precedence over these.
@@ -222,7 +225,10 @@ impl Config {
 
         let mut bindings: HashMap<KeyCombo, Action> = default_bindings(mod_key, cycle_modifier)
             .into_iter()
-            .map(|(mut k, v)| { k.normalize(); (k, v) })
+            .map(|(mut k, v)| {
+                k.normalize();
+                (k, v)
+            })
             .collect();
 
         if let Some(user_bindings) = raw.keybindings {
@@ -374,7 +380,7 @@ impl Config {
             repeat_rate: raw.input.keyboard.repeat_rate.unwrap_or(25),
             edge_zone: raw.navigation.edge_pan.zone.unwrap_or(100.0),
             edge_pan_min: raw.navigation.edge_pan.speed_min.unwrap_or(4.0),
-            edge_pan_max: raw.navigation.edge_pan.speed_max.unwrap_or(30.0),
+            edge_pan_max: raw.navigation.edge_pan.speed_max.unwrap_or(20.0),
             animation_speed: raw.navigation.animation_speed.unwrap_or(0.3),
             cycle_modifier,
             zoom_step: raw.zoom.step.unwrap_or(1.1),
@@ -392,11 +398,11 @@ impl Config {
             keyboard_layout,
             cursor_theme: raw.cursor.theme,
             cursor_size: raw.cursor.size,
-            inactive_cursor_opacity: raw.cursor.inactive_opacity
-                .unwrap_or(0.5)
-                .clamp(0.0, 1.0),
+            inactive_cursor_opacity: raw.cursor.inactive_opacity.unwrap_or(0.5).clamp(0.0, 1.0),
             output_outline: parse_output_outline(raw.output.outline.unwrap_or_default()),
-            nav_anchors: raw.navigation.anchors
+            nav_anchors: raw
+                .navigation
+                .anchors
                 .unwrap_or_else(|| vec![[0.0, 0.0]])
                 .into_iter()
                 .map(|[x, y]| Point::from((x, -y)))
@@ -422,7 +428,12 @@ impl Config {
     /// Find the Nth matching window rule (with position) for the given `app_id` and `title`.
     /// Used by layer shell to assign different rules to successive surfaces with
     /// the same namespace (e.g. two waybar instances at different positions).
-    pub fn match_window_rule_nth(&self, app_id: &str, title: &str, n: usize) -> Option<&WindowRule> {
+    pub fn match_window_rule_nth(
+        &self,
+        app_id: &str,
+        title: &str,
+        n: usize,
+    ) -> Option<&WindowRule> {
         self.window_rules
             .iter()
             .filter(|rule| rule.position.is_some() && Self::rule_matches(rule, app_id, title))
@@ -440,8 +451,14 @@ impl Config {
     }
 
     fn rule_matches(rule: &WindowRule, app_id: &str, title: &str) -> bool {
-        let app_ok = rule.app_id.as_ref().is_none_or(|pat| Self::glob_matches(pat, app_id));
-        let title_ok = rule.title.as_ref().is_none_or(|pat| Self::glob_matches(pat, title));
+        let app_ok = rule
+            .app_id
+            .as_ref()
+            .is_none_or(|pat| Self::glob_matches(pat, app_id));
+        let title_ok = rule
+            .title
+            .as_ref()
+            .is_none_or(|pat| Self::glob_matches(pat, title));
         app_ok && title_ok
     }
 }
@@ -596,10 +613,15 @@ fn parse_output_mode(s: &str) -> Result<OutputMode, String> {
 fn parse_output_position(val: &::toml::Value) -> Result<OutputPosition, String> {
     match val {
         ::toml::Value::String(s) if s == "auto" => Ok(OutputPosition::Auto),
-        ::toml::Value::String(s) => Err(format!("invalid position '{s}', expected \"auto\" or [x, y]")),
+        ::toml::Value::String(s) => Err(format!(
+            "invalid position '{s}', expected \"auto\" or [x, y]"
+        )),
         ::toml::Value::Array(arr) => {
             if arr.len() != 2 {
-                return Err(format!("position array must have 2 elements, got {}", arr.len()));
+                return Err(format!(
+                    "position array must have 2 elements, got {}",
+                    arr.len()
+                ));
             }
             let x = arr[0]
                 .as_integer()
@@ -673,7 +695,10 @@ mod tests {
 
     #[test]
     fn parse_mode_preferred() {
-        assert_eq!(parse_output_mode("preferred").unwrap(), OutputMode::Preferred);
+        assert_eq!(
+            parse_output_mode("preferred").unwrap(),
+            OutputMode::Preferred
+        );
     }
 
     #[test]

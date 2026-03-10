@@ -54,7 +54,7 @@
 [navigation.edge_pan]
 # zone = 100.0                # activation zone width (px from viewport edge)
 # speed_min = 4.0             # px/frame at zone boundary
-# speed_max = 30.0            # px/frame at viewport edge
+# speed_max = 20.0            # px/frame at viewport edge
 
 [zoom]
 # step = 1.1                  # multiplier per keypress (1.1 = 10% per press)
