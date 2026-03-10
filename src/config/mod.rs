@@ -19,6 +19,16 @@ use smithay::utils::{Logical, Point, Transform};
 use defaults::{default_bindings, default_gesture_bindings, default_mouse_bindings};
 use toml::{ConfigFile, DecorationFileConfig, OutputRuleFile, WindowRuleFile, expand_tilde};
 
+/// Env vars the compositor sets as toolkit fallbacks.
+/// `[env]` config entries take precedence over these.
+const TOOLKIT_DEFAULTS: &[(&str, &str)] = &[
+    ("MOZ_ENABLE_WAYLAND", "1"),
+    ("QT_QPA_PLATFORM", "wayland;xcb"),
+    ("SDL_VIDEODRIVER", "wayland,x11"),
+    ("GDK_BACKEND", "wayland,x11"),
+    ("ELECTRON_OZONE_PLATFORM_HINT", "wayland"),
+];
+
 pub struct Config {
     pub mod_key: ModKey,
     /// Multiplier for scroll deltas. Higher = faster initial scroll. 1.0 = raw trackpad.
@@ -65,6 +75,7 @@ pub struct Config {
     pub nav_anchors: Vec<Point<f64, Logical>>,
     pub window_rules: Vec<WindowRule>,
     pub xwayland_enabled: bool,
+    pub env: HashMap<String, String>,
     pub output_configs: Vec<OutputConfig>,
     bindings: HashMap<KeyCombo, Action>,
     pub mouse: ContextBindings<MouseBinding, MouseAction>,
@@ -165,8 +176,18 @@ impl Config {
                 ConfigFile::default()
             }
         };
-        // Set cursor env vars before building config (unsafe — process-wide mutation,
+        // Set user env vars first (unsafe — process-wide mutation,
         // only safe at startup before threads are spawned)
+        for (key, value) in &raw.env {
+            unsafe { std::env::set_var(key, value) };
+        }
+        // Toolkit fallbacks — only set if not already in env (user config wins)
+        for &(key, value) in TOOLKIT_DEFAULTS {
+            if std::env::var(key).is_err() {
+                unsafe { std::env::set_var(key, value) };
+            }
+        }
+        // Cursor env vars
         if let Some(ref theme) = raw.cursor.theme {
             unsafe { std::env::set_var("XCURSOR_THEME", theme) };
         }
@@ -377,6 +398,7 @@ impl Config {
                 .map(|[x, y]| Point::from((x, -y)))
                 .collect(),
             autostart: raw.autostart.unwrap_or_default(),
+            env: raw.env,
             window_rules,
             xwayland_enabled: raw.xwayland.enabled,
             output_configs,

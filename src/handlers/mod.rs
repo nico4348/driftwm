@@ -327,16 +327,24 @@ impl XdgDecorationHandler for DriftWm {
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode) {
         use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
-        // Accept the client's preference. Apps that genuinely need SSD (Qt/Vorta)
-        // will request ServerSide; CSD-capable apps (GTK4) typically accept our
-        // initial ClientSide and never call request_mode.
+
+        let wl_surface = toplevel.wl_surface().clone();
+
+        // If a window rule forces decoration mode, override the client's request
+        let effective_mode = if let Some(rule) = driftwm::config::applied_rule(&wl_surface)
+            && rule.decoration != driftwm::config::DecorationMode::Client
+        {
+            Mode::ServerSide
+        } else {
+            mode
+        };
+
         toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(mode);
+            state.decoration_mode = Some(effective_mode);
         });
         toplevel.send_configure();
 
-        let wl_surface = toplevel.wl_surface().clone();
-        if mode == Mode::ServerSide {
+        if effective_mode == Mode::ServerSide {
             self.pending_ssd.insert(wl_surface.id());
             // If the window is already mapped (request_mode came after first commit),
             // create the SSD decoration immediately.

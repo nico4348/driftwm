@@ -13,6 +13,14 @@
 # Each entry is passed to sh -c, so full shell syntax works (pipes, &&, env vars).
 # autostart = []
 
+# Environment variables set before any clients launch.
+# Child processes (autostart, exec bindings) inherit these.
+# These override the compositor's built-in toolkit defaults
+# (MOZ_ENABLE_WAYLAND, QT_QPA_PLATFORM, SDL_VIDEODRIVER, GDK_BACKEND, ELECTRON_OZONE_PLATFORM_HINT).
+[env]
+# QT_WAYLAND_DISABLE_WINDOWDECORATION = "1"
+# MOZ_ENABLE_WAYLAND = "1"
+
 [input.keyboard]
 # layout = "us"              # XKB layout (e.g., "us,ru" for multi-layout)
 # variant = ""               # XKB variant (e.g., "dvorak", or "," for two defaults)

@@ -19,6 +19,7 @@ pub(super) struct ConfigFile {
     pub keybindings: Option<HashMap<String, String>>,
     pub mouse: MouseFileConfig,
     pub gestures: GestureFileConfig,
+    pub env: HashMap<String, String>,
     pub xwayland: XWaylandConfig,
     pub window_rules: Option<Vec<WindowRuleFile>>,
     pub outputs: Option<Vec<OutputRuleFile>>,

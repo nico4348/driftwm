@@ -130,6 +130,7 @@ position = [126, -259]
 widget = true
 decoration = "none"
 
+# Cosmic settings: hide winit window helper and apply fixed window size
 [[window_rules]]
 title = "winit window"
 widget = true
@@ -138,3 +139,7 @@ no_focus = true
 [[window_rules]]
 app_id = "com.system76.CosmicSettings"
 size=[500, 725]
+
+[[window_rules]]
+app_id = "org.telegram.desktop"
+decoration = "server"

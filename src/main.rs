@@ -87,11 +87,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &socket_name) };
     unsafe { std::env::set_var("XDG_SESSION_TYPE", "wayland") };
     unsafe { std::env::set_var("XDG_CURRENT_DESKTOP", "driftwm") };
-    unsafe { std::env::set_var("MOZ_ENABLE_WAYLAND", "1") };
-    unsafe { std::env::set_var("QT_QPA_PLATFORM", "wayland;xcb") };
-    unsafe { std::env::set_var("SDL_VIDEODRIVER", "wayland,x11") };
-    unsafe { std::env::set_var("GDK_BACKEND", "wayland,x11") };
-    unsafe { std::env::set_var("ELECTRON_OZONE_PLATFORM_HINT", "wayland") };
+    // Toolkit env vars (MOZ_ENABLE_WAYLAND, QT_QPA_PLATFORM, etc.) are now
+    // set in Config::load() with user [env] overrides taking precedence.
     unsafe { std::env::set_var("XDG_SESSION_CLASS", "user") };
     unsafe { std::env::set_var("XDG_SESSION_DESKTOP", "driftwm") };
 

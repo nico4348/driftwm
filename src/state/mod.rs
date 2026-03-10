@@ -1236,6 +1236,20 @@ impl DriftWm {
             );
         }
 
+        // Env vars — diff old vs new, apply changes
+        for (key, value) in &new_config.env {
+            if self.config.env.get(key) != Some(value) {
+                tracing::info!("Config reload: env {key}={value}");
+                unsafe { std::env::set_var(key, value) };
+            }
+        }
+        for key in self.config.env.keys() {
+            if !new_config.env.contains_key(key) {
+                tracing::info!("Config reload: env unset {key}");
+                unsafe { std::env::remove_var(key) };
+            }
+        }
+
         self.config = new_config;
         self.mark_all_dirty();
         tracing::info!("Config reloaded");
