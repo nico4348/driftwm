@@ -411,6 +411,7 @@ pub fn applied_rule(
 pub struct DecorationConfig {
     pub bg_color: [u8; 4],
     pub fg_color: [u8; 4],
+    pub corner_radius: i32,
 }
 
 impl Default for DecorationConfig {
@@ -418,6 +419,7 @@ impl Default for DecorationConfig {
         Self {
             bg_color: [0x30, 0x30, 0x30, 0xFF],
             fg_color: [0xFF, 0xFF, 0xFF, 0xFF],
+            corner_radius: 8,
         }
     }
 }
@@ -425,9 +427,8 @@ impl Default for DecorationConfig {
 impl DecorationConfig {
     pub const TITLE_BAR_HEIGHT: i32 = 25;
     pub const SHADOW_RADIUS: f32 = 14.0;
-    pub const SHADOW_COLOR: [u8; 4] = [0x00, 0x00, 0x00, 0x20];
+    pub const SHADOW_COLOR: [u8; 4] = [0x00, 0x00, 0x00, 0x18];
     pub const RESIZE_BORDER_WIDTH: i32 = 8;
-    pub const CORNER_RADIUS: i32 = 8;
 }
 
 /// Settings for drawing outlines of other monitors' viewports.

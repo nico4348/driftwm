@@ -24,7 +24,7 @@ void main() {
     vec2 q = abs(pixel - center) - half_size + vec2(u_corner_radius);
     float dist = length(max(q, 0.0)) - u_corner_radius;
 
-    // Gaussian falloff: sigma = radius/3 so shadow is ~invisible at u_radius (3σ rule)
+    // Gaussian falloff: sigma = radius/3 so shadow is ~invisible at u_radius
     float sigma = u_radius / 3.0;
     float shadow = exp(-(dist * dist) / (2.0 * sigma * sigma));
     // Only apply shadow outside the window

@@ -158,7 +158,7 @@ pub fn render_title_bar(
     let w = width.max(1);
     let bg = config.bg_color;
     let fg = config.fg_color;
-    let cr = DecorationConfig::CORNER_RADIUS as f64;
+    let cr = config.corner_radius as f64;
 
     let mut pixels = vec![0u8; (w * h * 4) as usize];
 

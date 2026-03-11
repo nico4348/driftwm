@@ -69,6 +69,7 @@
 [decorations]
 # bg_color = "#303030"           # title bar background (default: dark gray)
 # fg_color = "#FFFFFF"           # close button × color (default: white)
+# corner_radius = 8              # CSD window corner rounding radius in pixels
 
 [effects]
 # blur_radius = 3               # number of Kawase down+up passes (default: 3)

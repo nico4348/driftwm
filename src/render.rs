@@ -1,16 +1,18 @@
+use std::borrow::Cow;
 use std::time::Duration;
 
 use smithay::{
     backend::renderer::{
         element::{
-            Element,
+            Element, RenderElement,
             Kind,
             memory::MemoryRenderBufferRenderElement,
             render_elements,
             texture::TextureRenderElement,
             utils::RescaleRenderElement,
         },
-        gles::{GlesError, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName, UniformType, element::PixelShaderElement},
+        gles::{GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName, UniformType, element::PixelShaderElement},
+        utils::{CommitCounter, DamageSet, OpaqueRegions},
     },
     input::pointer::{CursorImageStatus, CursorImageSurfaceData},
     output::Output,
@@ -38,6 +40,7 @@ render_elements! {
     Background=RescaleRenderElement<PixelShaderElement>,
     Tile=RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>,
     Window=RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
+    CsdWindow=RescaleRenderElement<RoundedCornerElement>,
     Layer=WaylandSurfaceRenderElement<GlesRenderer>,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
     CursorSurface=smithay::backend::renderer::element::Wrap<WaylandSurfaceRenderElement<GlesRenderer>>,
@@ -87,6 +90,112 @@ pub fn compile_shadow_shader(renderer: &mut GlesRenderer) -> Option<smithay::bac
             tracing::error!("Failed to compile shadow shader: {e}");
             None
         }
+    }
+}
+
+fn shadow_uniforms(
+    shadow_padding: i32,
+    content_w: i32,
+    content_h: i32,
+    shadow_radius: f32,
+    corner_radius: f32,
+) -> Vec<Uniform<'static>> {
+    use driftwm::config::DecorationConfig;
+    let sc = DecorationConfig::SHADOW_COLOR;
+    vec![
+        Uniform::new("u_window_rect", (
+            shadow_padding as f32, shadow_padding as f32,
+            content_w as f32, content_h as f32,
+        )),
+        Uniform::new("u_radius", shadow_radius),
+        Uniform::new("u_color", (
+            sc[0] as f32 / 255.0, sc[1] as f32 / 255.0,
+            sc[2] as f32 / 255.0, sc[3] as f32 / 255.0,
+        )),
+        Uniform::new("u_corner_radius", corner_radius),
+    ]
+}
+
+const CORNER_CLIP_SRC: &str = include_str!("shaders/corner_clip.glsl");
+
+pub const CORNER_CLIP_UNIFORMS: &[UniformName<'static>] = &[
+    UniformName { name: Cow::Borrowed("u_size"), type_: UniformType::_2f },
+    UniformName { name: Cow::Borrowed("u_geo"), type_: UniformType::_4f },
+    UniformName { name: Cow::Borrowed("u_radius"), type_: UniformType::_1f },
+    UniformName { name: Cow::Borrowed("u_clip_top"), type_: UniformType::_1f },
+    UniformName { name: Cow::Borrowed("u_clip_shadow"), type_: UniformType::_1f },
+];
+
+pub fn compile_corner_clip_shader(renderer: &mut GlesRenderer) -> Option<GlesTexProgram> {
+    match renderer.compile_custom_texture_shader(CORNER_CLIP_SRC, CORNER_CLIP_UNIFORMS) {
+        Ok(shader) => Some(shader),
+        Err(e) => {
+            tracing::error!("Failed to compile corner clip shader: {e}");
+            None
+        }
+    }
+}
+
+/// Wrapper element that applies a rounded-corner clipping shader to a CSD window's root surface.
+pub struct RoundedCornerElement {
+    inner: WaylandSurfaceRenderElement<GlesRenderer>,
+    shader: GlesTexProgram,
+    uniforms: Vec<Uniform<'static>>,
+}
+
+impl RoundedCornerElement {
+    pub fn new(
+        inner: WaylandSurfaceRenderElement<GlesRenderer>,
+        shader: GlesTexProgram,
+        uniforms: Vec<Uniform<'static>>,
+    ) -> Self {
+        Self { inner, shader, uniforms }
+    }
+}
+
+impl Element for RoundedCornerElement {
+    fn id(&self) -> &smithay::backend::renderer::element::Id { self.inner.id() }
+    fn current_commit(&self) -> CommitCounter { self.inner.current_commit() }
+    fn location(&self, scale: Scale<f64>) -> Point<i32, Physical> { self.inner.location(scale) }
+    fn src(&self) -> Rectangle<f64, smithay::utils::Buffer> { self.inner.src() }
+    fn transform(&self) -> Transform { self.inner.transform() }
+    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> { self.inner.geometry(scale) }
+    fn damage_since(
+        &self, scale: Scale<f64>, commit: Option<CommitCounter>,
+    ) -> DamageSet<i32, Physical> {
+        self.inner.damage_since(scale, commit)
+    }
+    fn opaque_regions(
+        &self, scale: Scale<f64>,
+    ) -> OpaqueRegions<i32, Physical> {
+        // The commit handler in compositor.rs already trims corner squares from
+        // opaque regions, so delegating here is correct and avoids forcing
+        // full background redraws behind the entire window.
+        self.inner.opaque_regions(scale)
+    }
+    fn alpha(&self) -> f32 { self.inner.alpha() }
+    fn kind(&self) -> Kind { self.inner.kind() }
+}
+
+impl RenderElement<GlesRenderer> for RoundedCornerElement {
+    fn draw(
+        &self,
+        frame: &mut GlesFrame<'_, '_>,
+        src: Rectangle<f64, smithay::utils::Buffer>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>],
+    ) -> Result<(), GlesError> {
+        frame.override_default_tex_program(self.shader.clone(), self.uniforms.clone());
+        let result = self.inner.draw(frame, src, dst, damage, opaque_regions);
+        frame.clear_tex_program_override();
+        result
+    }
+
+    fn underlying_storage(
+        &self, renderer: &mut GlesRenderer,
+    ) -> Option<smithay::backend::renderer::element::UnderlyingStorage<'_>> {
+        self.inner.underlying_storage(renderer)
     }
 }
 
@@ -748,14 +857,53 @@ pub fn compose_frame(
                 }
             }
 
-            // Window surface elements
-            target.extend(elems.into_iter().map(|elem| {
-                OutputRenderElements::Window(RescaleRenderElement::from_element(
-                    elem,
-                    Point::<i32, Physical>::from((0, 0)),
-                    zoom,
-                ))
-            }));
+            // Window surface elements — clip bottom corners to match title bar rounding
+            if let Some(ref shader) = state.corner_clip_shader {
+                let radius = state.config.decorations.corner_radius as f32;
+                if radius > 0.0 {
+                    let toplevel_id = smithay::backend::renderer::element::Id::from_wayland_resource(&*wl_surface);
+                    for elem in elems {
+                        if *elem.id() == toplevel_id {
+                            let buf = elem.buffer_size();
+                            // SSD windows: geometry is the full buffer, only clip bottom corners
+                            let uniforms = vec![
+                                Uniform::new("u_size", (buf.w as f32, buf.h as f32)),
+                                Uniform::new("u_geo", (0.0f32, 0.0f32, buf.w as f32, buf.h as f32)),
+                                Uniform::new("u_radius", radius),
+                                Uniform::new("u_clip_top", 0.0f32),
+                                Uniform::new("u_clip_shadow", 0.0f32),
+                            ];
+                            target.push(OutputRenderElements::CsdWindow(RescaleRenderElement::from_element(
+                                RoundedCornerElement::new(elem, shader.clone(), uniforms),
+                                Point::<i32, Physical>::from((0, 0)),
+                                zoom,
+                            )));
+                        } else {
+                            target.push(OutputRenderElements::Window(RescaleRenderElement::from_element(
+                                elem,
+                                Point::<i32, Physical>::from((0, 0)),
+                                zoom,
+                            )));
+                        }
+                    }
+                } else {
+                    target.extend(elems.into_iter().map(|elem| {
+                        OutputRenderElements::Window(RescaleRenderElement::from_element(
+                            elem,
+                            Point::<i32, Physical>::from((0, 0)),
+                            zoom,
+                        ))
+                    }));
+                }
+            } else {
+                target.extend(elems.into_iter().map(|elem| {
+                    OutputRenderElements::Window(RescaleRenderElement::from_element(
+                        elem,
+                        Point::<i32, Physical>::from((0, 0)),
+                        zoom,
+                    ))
+                }));
+            }
 
             // Shadow element: cached per-window, rebuilt only on resize.
             // Stable Id lets the damage tracker skip unchanged shadow regions.
@@ -770,52 +918,30 @@ pub fn compose_frame(
                     render_loc.y.round() as i32 - bar_height - r,
                 ));
                 let shadow_area = Rectangle::new(shadow_loc, (shadow_w, shadow_h).into());
+                let corner_r = state.config.decorations.corner_radius as f32;
 
                 if let Some(deco) = state.decorations.get_mut(&wl_surface.id()) {
                     let content_size = (geom_size.w, geom_size.h);
-                    // Invalidate cache if opacity changed (e.g. rule applied after first render)
                     if deco.cached_shadow.as_ref().is_some_and(|s| (s.alpha() - opacity as f32).abs() > f32::EPSILON) {
                         deco.cached_shadow = None;
                     }
                     let shadow_elem = if let Some(shadow) = &mut deco.cached_shadow {
                         if deco.shadow_content_size != content_size {
                             deco.shadow_content_size = content_size;
-                            let sc = DecorationConfig::SHADOW_COLOR;
-                            shadow.update_uniforms(vec![
-                                Uniform::new("u_window_rect", (
-                                    r as f32, r as f32,
-                                    geom_size.w as f32, (geom_size.h + bar_height) as f32,
-                                )),
-                                Uniform::new("u_radius", radius),
-                                Uniform::new("u_color", (
-                                    sc[0] as f32 / 255.0, sc[1] as f32 / 255.0,
-                                    sc[2] as f32 / 255.0, sc[3] as f32 / 255.0,
-                                )),
-                                Uniform::new("u_corner_radius", DecorationConfig::CORNER_RADIUS as f32),
-                            ]);
+                            shadow.update_uniforms(shadow_uniforms(
+                                r, geom_size.w, geom_size.h + bar_height, radius, corner_r,
+                            ));
                         }
                         shadow.resize(shadow_area, None);
                         shadow.clone()
                     } else {
                         deco.shadow_content_size = content_size;
-                        let sc = DecorationConfig::SHADOW_COLOR;
                         let elem = PixelShaderElement::new(
                             shader.clone(),
                             shadow_area,
                             None,
                             opacity as f32,
-                            vec![
-                                Uniform::new("u_window_rect", (
-                                    r as f32, r as f32,
-                                    geom_size.w as f32, (geom_size.h + bar_height) as f32,
-                                )),
-                                Uniform::new("u_radius", radius),
-                                Uniform::new("u_color", (
-                                    sc[0] as f32 / 255.0, sc[1] as f32 / 255.0,
-                                    sc[2] as f32 / 255.0, sc[3] as f32 / 255.0,
-                                )),
-                                Uniform::new("u_corner_radius", DecorationConfig::CORNER_RADIUS as f32),
-                            ],
+                            shadow_uniforms(r, geom_size.w, geom_size.h + bar_height, radius, corner_r),
                             Kind::Unspecified,
                         );
                         deco.cached_shadow = Some(elem.clone());
@@ -829,6 +955,102 @@ pub fn compose_frame(
                         ),
                     ));
                 }
+            }
+        } else if let Some(ref shader) = state.corner_clip_shader {
+            let geo = window.geometry();
+            let radius = state.config.decorations.corner_radius as f32;
+
+            // Only apply corner clip to CSD windows that have a shadow/border frame
+            // around the geometry (geo.loc != origin or geo.size < buffer size).
+            // Windows with decoration rule != client have CSD stripped — skip them.
+            // Windows where geometry fills the buffer (GTK4-style) handle corners
+            // themselves — applying our shader would create double-clip artifacts.
+            let rule_forced = applied.as_ref().is_some_and(|r| {
+                r.decoration != driftwm::config::DecorationMode::Client
+            });
+            let has_frame = geo.loc.x > 0 || geo.loc.y > 0;
+
+            if !rule_forced && has_frame && radius > 0.0 {
+                let toplevel_id = smithay::backend::renderer::element::Id::from_wayland_resource(&*wl_surface);
+                for elem in elems {
+                    if *elem.id() == toplevel_id {
+                        let buf = elem.buffer_size();
+                        let uniforms = vec![
+                            Uniform::new("u_size", (buf.w as f32, buf.h as f32)),
+                            Uniform::new("u_geo", (
+                                geo.loc.x as f32, geo.loc.y as f32,
+                                geo.size.w as f32, geo.size.h as f32,
+                            )),
+                            Uniform::new("u_radius", radius),
+                            Uniform::new("u_clip_top", 1.0f32),
+                            Uniform::new("u_clip_shadow", 1.0f32),
+                        ];
+                        target.push(OutputRenderElements::CsdWindow(RescaleRenderElement::from_element(
+                            RoundedCornerElement::new(elem, shader.clone(), uniforms),
+                            Point::<i32, Physical>::from((0, 0)),
+                            zoom,
+                        )));
+                    } else {
+                        target.push(OutputRenderElements::Window(RescaleRenderElement::from_element(
+                            elem,
+                            Point::<i32, Physical>::from((0, 0)),
+                            zoom,
+                        )));
+                    }
+                }
+
+                // Compositor shadow behind corner-clipped CSD windows (replaces CSD shadow)
+                if let Some(ref shadow_shader) = state.shadow_shader {
+                    use driftwm::config::DecorationConfig;
+                    let shadow_radius = DecorationConfig::SHADOW_RADIUS;
+                    let sr = shadow_radius.ceil() as i32;
+                    let shadow_w = geom_size.w + 2 * sr;
+                    let shadow_h = geom_size.h + 2 * sr;
+                    // render_loc is the buffer origin; geometry starts at render_loc + geo.loc
+                    let shadow_loc: Point<i32, Logical> = Point::from((
+                        render_loc.x.round() as i32 + geo.loc.x - sr,
+                        render_loc.y.round() as i32 + geo.loc.y - sr,
+                    ));
+                    let shadow_area = Rectangle::new(shadow_loc, (shadow_w, shadow_h).into());
+                    let content_size = (geom_size.w, geom_size.h);
+                    let corner_r = state.config.decorations.corner_radius as f32;
+
+                    let shadow_entry = state.csd_shadows.entry(wl_surface.id());
+                    let (shadow_elem, cached_size) = shadow_entry.or_insert_with(|| {
+                        let elem = PixelShaderElement::new(
+                            shadow_shader.clone(),
+                            shadow_area,
+                            None,
+                            opacity as f32,
+                            shadow_uniforms(sr, geom_size.w, geom_size.h, shadow_radius, corner_r),
+                            Kind::Unspecified,
+                        );
+                        (elem, content_size)
+                    });
+
+                    if *cached_size != content_size {
+                        *cached_size = content_size;
+                        shadow_elem.update_uniforms(shadow_uniforms(
+                            sr, geom_size.w, geom_size.h, shadow_radius, corner_r,
+                        ));
+                    }
+                    shadow_elem.resize(shadow_area, None);
+                    target.push(OutputRenderElements::Background(
+                        RescaleRenderElement::from_element(
+                            shadow_elem.clone(),
+                            Point::<i32, Physical>::from((0, 0)),
+                            zoom,
+                        ),
+                    ));
+                }
+            } else {
+                target.extend(elems.into_iter().map(|elem| {
+                    OutputRenderElements::Window(RescaleRenderElement::from_element(
+                        elem,
+                        Point::<i32, Physical>::from((0, 0)),
+                        zoom,
+                    ))
+                }));
             }
         } else {
             target.extend(elems.into_iter().map(|elem| {

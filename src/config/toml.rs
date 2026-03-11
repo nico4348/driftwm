@@ -138,6 +138,7 @@ pub(super) struct BackgroundFileConfig {
 pub(super) struct DecorationFileConfig {
     pub bg_color: Option<String>,
     pub fg_color: Option<String>,
+    pub corner_radius: Option<i32>,
 }
 
 #[derive(Deserialize)]

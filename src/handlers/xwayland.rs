@@ -123,6 +123,7 @@ impl XwmHandler for DriftWm {
                     );
                 }
                 self.decorations.remove(&wl_surface.id());
+                self.csd_shadows.remove(&wl_surface.id());
                 self.pending_ssd.remove(&wl_surface.id());
                 self.pending_center.remove(&*wl_surface);
                 self.pending_size.remove(&*wl_surface);

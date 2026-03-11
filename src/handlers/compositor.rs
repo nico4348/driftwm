@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use crate::grabs::{ResizeState, has_left, has_top};
 use crate::handlers::layer_shell::LayerDestroyedMarker;
 use crate::state::{ClientState, DriftWm, FocusTarget};
+use smithay::utils::Rectangle;
 use smithay::xwayland::XWaylandClientData;
 use smithay::desktop::layer_map_for_output;
 use smithay::wayland::shell::wlr_layer::{
@@ -19,7 +20,7 @@ use smithay::{
         compositor::{
             add_blocker, add_pre_commit_hook, get_parent, is_sync_subsurface, with_states,
             BufferAssignment, CompositorClientState, CompositorHandler, CompositorState,
-            SurfaceAttributes,
+            RectangleKind, SurfaceAttributes,
         },
         dmabuf::get_dmabuf,
         seat::WaylandFocus,
@@ -96,6 +97,39 @@ impl CompositorHandler for DriftWm {
             if ok {
                 add_blocker(surface, blocker);
             }
+        }
+
+        // Trim corners from CSD toplevels' opaque regions so the background renders
+        // behind rounded corners. Some CSD apps (e.g. LibreOffice/GTK3) declare the
+        // full rect as opaque while rendering transparent corner pixels, causing black
+        // artifacts where the damage tracker skips background redraws.
+        if !self.decorations.contains_key(&surface.id()) {
+            with_states(surface, |states| {
+                if states.data_map.get::<XdgToplevelSurfaceData>().is_none() {
+                    return;
+                }
+                let mut guard = states.cached_state.get::<SurfaceAttributes>();
+                let attrs = guard.current();
+                if let Some(ref mut region) = attrs.opaque_region {
+                    let Some(bounds) = region.rects.iter()
+                        .filter(|(k, _)| matches!(k, RectangleKind::Add))
+                        .map(|(_, r)| *r)
+                        .reduce(|a, b| a.merge(b))
+                    else { return };
+                    let r = self.config.decorations.corner_radius + 2;
+                    if bounds.size.w > 2 * r && bounds.size.h > 2 * r {
+                        let (x, y, w, h) = (bounds.loc.x, bounds.loc.y, bounds.size.w, bounds.size.h);
+                        for corner in [
+                            Rectangle::new((x, y).into(), (r, r).into()),
+                            Rectangle::new((x + w - r, y).into(), (r, r).into()),
+                            Rectangle::new((x + w - r, y + h - r).into(), (r, r).into()),
+                            Rectangle::new((x, y + h - r).into(), (r, r).into()),
+                        ] {
+                            region.rects.push((RectangleKind::Subtract, corner));
+                        }
+                    }
+                }
+            });
         }
 
         // Update renderer surface state (buffer dimensions, surface_view, textures).

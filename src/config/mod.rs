@@ -515,6 +515,7 @@ fn parse_decoration_config(raw: DecorationFileConfig) -> DecorationConfig {
     DecorationConfig {
         bg_color: resolve(raw.bg_color, defaults.bg_color, "bg_color"),
         fg_color: resolve(raw.fg_color, defaults.fg_color, "fg_color"),
+        corner_radius: raw.corner_radius.unwrap_or(defaults.corner_radius).max(0),
     }
 }
 
