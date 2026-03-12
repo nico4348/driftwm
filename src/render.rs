@@ -224,8 +224,6 @@ impl RenderElement<GlesRenderer> for RoundedCornerElement {
 static BLUR_DOWN_SRC: &str = include_str!("shaders/blur_down.glsl");
 static BLUR_UP_SRC: &str = include_str!("shaders/blur_up.glsl");
 
-pub const BLUR_COOLDOWN_FRAMES: u8 = 3;
-
 /// Per-window cached textures for Kawase blur ping-pong passes.
 pub struct BlurCache {
     pub texture: GlesTexture,
@@ -233,10 +231,9 @@ pub struct BlurCache {
     pub mask: GlesTexture,
     pub size: Size<i32, Physical>,
     pub dirty: bool,
-    pub cooldown: u8,
     pub last_scene_generation: u64,
     pub last_geometry_generation: u64,
-    pub last_screen_rect: Rectangle<i32, Physical>,
+    pub last_camera_generation: u64,
 }
 
 impl BlurCache {
@@ -248,8 +245,8 @@ impl BlurCache {
         let t3 = Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, buf_size).ok()?;
         Some(Self {
             texture: t1, scratch: t2, mask: t3, size,
-            dirty: true, cooldown: 0, last_scene_generation: 0,
-            last_geometry_generation: 0, last_screen_rect: Rectangle::default(),
+            dirty: true, last_scene_generation: 0,
+            last_geometry_generation: 0, last_camera_generation: 0,
         })
     }
 
@@ -265,7 +262,6 @@ impl BlurCache {
             self.mask = t3;
             self.size = size;
             self.dirty = true;
-            self.cooldown = 0;
         }
     }
 }
@@ -1283,8 +1279,9 @@ fn process_blur_requests(
     let context_id = renderer.context_id();
     let scene_gen = state.blur_scene_generation;
     let geom_gen = state.blur_geometry_generation;
+    let camera_gen = state.blur_camera_generation;
 
-    // ── First pass: create/resize caches, update dirty/cooldown, decide who recomputes ──
+    // ── First pass: create/resize caches, update dirty flags, decide who recomputes ──
     let mut needs_recompute: Vec<bool> = Vec::with_capacity(blur_requests.len());
     for req in blur_requests.iter() {
         let win_size = req.screen_rect.size;
@@ -1307,29 +1304,20 @@ fn process_blur_requests(
             cache.resize(renderer, win_size);
         }
 
-        // Content change (surface commit) — mark dirty, don't extend cooldown
         let content_changed = cache.last_scene_generation != scene_gen;
-        // Geometry change (camera/move/z-order) or rect moved — reset cooldown
-        let geom_changed = cache.last_geometry_generation != geom_gen
-            || cache.last_screen_rect != req.screen_rect;
-        cache.last_scene_generation = scene_gen;
-        cache.last_geometry_generation = geom_gen;
-        cache.last_screen_rect = req.screen_rect;
-        if content_changed || geom_changed {
+        let geom_changed = cache.last_geometry_generation != geom_gen;
+        // Layer surfaces are screen-fixed — camera pans scroll the canvas behind them
+        let camera_dirty = matches!(req.layer, BlurLayer::Overlay | BlurLayer::Top)
+            && cache.last_camera_generation != camera_gen;
+
+        if content_changed || geom_changed || camera_dirty {
             cache.dirty = true;
         }
-        if geom_changed && !is_new {
-            cache.cooldown = BLUR_COOLDOWN_FRAMES;
-        }
+        cache.last_scene_generation = scene_gen;
+        cache.last_geometry_generation = geom_gen;
+        cache.last_camera_generation = camera_gen;
 
-        let should_recompute = if cache.dirty && cache.cooldown > 0 {
-            cache.cooldown -= 1;
-            false
-        } else {
-            cache.dirty
-        };
-
-        needs_recompute.push(should_recompute);
+        needs_recompute.push(cache.dirty);
     }
 
     let any_recompute = needs_recompute.iter().any(|&r| r);

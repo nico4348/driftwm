@@ -274,9 +274,12 @@ pub struct DriftWm {
     pub blur_bg_fbo: Option<(smithay::backend::renderer::gles::GlesTexture, Size<i32, smithay::utils::Physical>)>,
     /// Generation counter for blur cache invalidation — bumped on scene-affecting changes.
     pub blur_scene_generation: u64,
-    /// Structural generation — bumped on camera/move/z-order changes that should
-    /// debounce (reset cooldown). Content changes bump blur_scene_generation only.
+    /// Structural generation — bumped on move/z-order changes.
     pub blur_geometry_generation: u64,
+    /// Camera generation — bumped on camera/viewport changes only.
+    /// Layer surfaces need recompute on camera changes (screen-fixed, canvas scrolls behind them),
+    /// but canvas windows don't (same canvas content behind them regardless of camera).
+    pub blur_camera_generation: u64,
     // -- global: cached CSD shadows (for corner-clipped CSD windows) --
     pub csd_shadows: HashMap<smithay::reexports::wayland_server::backend::ObjectId, (PixelShaderElement, (i32, i32))>,
     // -- per-output: cached render elements (!Send, stays on DriftWm) --
@@ -518,6 +521,7 @@ impl DriftWm {
             blur_bg_fbo: None,
             blur_scene_generation: 0,
             blur_geometry_generation: 0,
+            blur_camera_generation: 0,
             csd_shadows: HashMap::new(),
             cached_bg_elements: HashMap::new(),
             background_tile: None,
@@ -999,8 +1003,7 @@ impl DriftWm {
             self.space.map_output(&output, cam);
         }
         if changed {
-            self.blur_scene_generation += 1;
-            self.blur_geometry_generation += 1;
+            self.blur_camera_generation += 1;
         }
     }
 

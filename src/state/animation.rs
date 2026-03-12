@@ -247,6 +247,7 @@ impl DriftWm {
         if dz.abs() < 0.001 {
             self.set_zoom(target);
             self.set_zoom_target(None);
+            self.blur_scene_generation += 1;
         } else {
             self.set_zoom(old_zoom + dz * factor);
         }
@@ -438,6 +439,8 @@ impl DriftWm {
             if dz.abs() < 0.001 {
                 os.zoom = target;
                 os.zoom_target = None;
+                drop(os);
+                self.blur_scene_generation += 1;
             } else {
                 os.zoom = old_zoom + dz * factor;
             }
