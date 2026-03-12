@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use crate::grabs::{ResizeState, has_left, has_top};
 use crate::handlers::layer_shell::LayerDestroyedMarker;
 use crate::state::{ClientState, DriftWm, FocusTarget};
+use smithay::input::pointer::CursorImageStatus;
 use smithay::utils::Rectangle;
 use smithay::xwayland::XWaylandClientData;
 use smithay::desktop::layer_map_for_output;
@@ -62,6 +63,30 @@ impl CompositorHandler for DriftWm {
 
     fn commit(&mut self, surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface) {
         self.mark_all_dirty();
+
+        // Bump blur scene generation for scene-affecting surfaces (skip cursor)
+        let is_cursor = matches!(
+            &self.cursor_status,
+            CursorImageStatus::Surface(s) if s.id() == surface.id()
+        );
+        if !is_cursor {
+            let is_scene_surface = with_states(surface, |states| {
+                states.data_map.get::<XdgToplevelSurfaceData>().is_some()
+                    || states.data_map.get::<LayerSurfaceData>().is_some()
+            }) || {
+                let mut root = surface.clone();
+                while let Some(parent) = get_parent(&root) {
+                    root = parent;
+                }
+                root != *surface && with_states(&root, |states| {
+                    states.data_map.get::<XdgToplevelSurfaceData>().is_some()
+                })
+            };
+            if is_scene_surface {
+                self.blur_scene_generation += 1;
+            }
+        }
+
         // DMA-BUF readiness blocker: if a pending buffer is a dmabuf, add a
         // calloop source that waits for the GPU fence and then unblocks the
         // compositor transaction. Without this, GPU-rendered frames may commit

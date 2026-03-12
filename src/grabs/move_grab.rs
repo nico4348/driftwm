@@ -167,6 +167,9 @@ impl PointerGrab<DriftWm> for MoveSurfaceGrab {
         _focus: Option<(<DriftWm as SeatHandler>::PointerFocus, Point<f64, Logical>)>,
         event: &MotionEvent,
     ) {
+        data.blur_scene_generation += 1;
+        data.blur_geometry_generation += 1;
+
         // Phase 3 input routing already converted event.location to the focused
         // output's canvas space and updated data.focused_output. If that differs
         // from self.output, the pointer crossed an output boundary.

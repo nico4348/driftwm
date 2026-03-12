@@ -224,12 +224,19 @@ impl RenderElement<GlesRenderer> for RoundedCornerElement {
 static BLUR_DOWN_SRC: &str = include_str!("shaders/blur_down.glsl");
 static BLUR_UP_SRC: &str = include_str!("shaders/blur_up.glsl");
 
+pub const BLUR_COOLDOWN_FRAMES: u8 = 3;
+
 /// Per-window cached textures for Kawase blur ping-pong passes.
 pub struct BlurCache {
     pub texture: GlesTexture,
     pub scratch: GlesTexture,
     pub mask: GlesTexture,
     pub size: Size<i32, Physical>,
+    pub dirty: bool,
+    pub cooldown: u8,
+    pub last_scene_generation: u64,
+    pub last_geometry_generation: u64,
+    pub last_screen_rect: Rectangle<i32, Physical>,
 }
 
 impl BlurCache {
@@ -239,7 +246,11 @@ impl BlurCache {
         let t1 = Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, buf_size).ok()?;
         let t2 = Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, buf_size).ok()?;
         let t3 = Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, buf_size).ok()?;
-        Some(Self { texture: t1, scratch: t2, mask: t3, size })
+        Some(Self {
+            texture: t1, scratch: t2, mask: t3, size,
+            dirty: true, cooldown: 0, last_scene_generation: 0,
+            last_geometry_generation: 0, last_screen_rect: Rectangle::default(),
+        })
     }
 
     pub fn resize(&mut self, renderer: &mut GlesRenderer, size: Size<i32, Physical>) {
@@ -253,6 +264,8 @@ impl BlurCache {
             self.scratch = t2;
             self.mask = t3;
             self.size = size;
+            self.dirty = true;
+            self.cooldown = 0;
         }
     }
 }
@@ -335,7 +348,6 @@ fn blur_pass(
     let half_pixel = [1.0 / src_w as f32, 1.0 / src_h as f32];
     let pass_offset = offset / (1 << src_shift) as f32;
 
-    let full_phys: Size<i32, Physical> = (tex_size.w, tex_size.h).into();
     let dst_phys: Size<i32, Physical> = (dst_w, dst_h).into();
     let src_buf: Rectangle<f64, smithay::utils::Buffer> =
         Rectangle::from_size((src_w as f64, src_h as f64).into());
@@ -343,10 +355,10 @@ fn blur_pass(
     let src = tex_a.clone();
     {
         let mut target = renderer.bind(tex_b)?;
-        let mut frame = renderer.render(&mut target, full_phys, Transform::Normal)?;
+        let mut frame = renderer.render(&mut target, dst_phys, Transform::Normal)?;
         frame.clear(
             Color32F::TRANSPARENT,
-            &[Rectangle::from_size(full_phys)],
+            &[Rectangle::from_size(dst_phys)],
         )?;
         frame.render_texture_from_to(
             &src,
@@ -1269,29 +1281,23 @@ fn process_blur_requests(
     let blur_passes = state.config.effects.blur_radius as usize;
     let blur_strength = state.config.effects.blur_strength as f32;
     let context_id = renderer.context_id();
+    let scene_gen = state.blur_scene_generation;
+    let geom_gen = state.blur_geometry_generation;
 
-    let mut index_shift = 0usize;
-
+    // ── First pass: create/resize caches, update dirty/cooldown, decide who recomputes ──
+    let mut needs_recompute: Vec<bool> = Vec::with_capacity(blur_requests.len());
     for req in blur_requests.iter() {
         let win_size = req.screen_rect.size;
         if win_size.w <= 0 || win_size.h <= 0 {
+            needs_recompute.push(false);
             continue;
         }
 
-        let prefix = match req.layer {
-            BlurLayer::Overlay => overlay_prefix,
-            BlurLayer::Top => top_prefix,
-            BlurLayer::Normal => normal_prefix,
-            BlurLayer::Widget => widget_prefix,
-        };
-        let behind_start = prefix + req.elem_start + req.elem_count + index_shift;
-        let behind_start = behind_start.min(all_elements.len());
-
-        // 1. Get or create cached blur textures
         if !state.blur_cache.contains_key(&req.surface_id) {
             if let Some(c) = BlurCache::new(renderer, win_size) {
                 state.blur_cache.insert(req.surface_id.clone(), c);
             } else {
+                needs_recompute.push(false);
                 continue;
             }
         }
@@ -1300,20 +1306,76 @@ fn process_blur_requests(
             cache.resize(renderer, win_size);
         }
 
-        // 2. Render behind-elements to the shared full-output FBO
-        {
-            let Ok(mut target) = renderer.bind(&mut bg_tex) else { continue };
-            let mut dt = OutputDamageTracker::new(output_size, output_scale, Transform::Normal);
-            let _ = dt.render_output(
-                renderer,
-                &mut target,
-                0,
-                &all_elements[behind_start..],
-                [0.0f32, 0.0, 0.0, 1.0],
-            );
+        // Content change (surface commit) — mark dirty, don't extend cooldown
+        let content_changed = cache.last_scene_generation != scene_gen;
+        // Geometry change (camera/move/z-order) or rect moved — reset cooldown
+        let geom_changed = cache.last_geometry_generation != geom_gen
+            || cache.last_screen_rect != req.screen_rect;
+        cache.last_scene_generation = scene_gen;
+        cache.last_geometry_generation = geom_gen;
+        cache.last_screen_rect = req.screen_rect;
+        if content_changed || geom_changed {
+            cache.dirty = true;
+        }
+        if geom_changed {
+            cache.cooldown = BLUR_COOLDOWN_FRAMES;
         }
 
-        // 3. Crop window region from bg_tex into cache.texture
+        let should_recompute = if cache.dirty && cache.cooldown > 0 {
+            cache.cooldown -= 1;
+            false
+        } else {
+            cache.dirty
+        };
+
+        needs_recompute.push(should_recompute);
+    }
+
+    let any_recompute = needs_recompute.iter().any(|&r| r);
+
+    // ── Shared bg render ONCE — only if any window needs recompute ──
+    if any_recompute {
+        // Shallowest behind_start = smallest index = longest slice (most elements behind).
+        // Ensures the bg_tex captures everything any blurred window needs.
+        let shallowest = blur_requests.iter().enumerate()
+            .filter(|(i, _)| needs_recompute[*i])
+            .map(|(_, req)| {
+                let prefix = match req.layer {
+                    BlurLayer::Overlay => overlay_prefix,
+                    BlurLayer::Top => top_prefix,
+                    BlurLayer::Normal => normal_prefix,
+                    BlurLayer::Widget => widget_prefix,
+                };
+                let behind = prefix + req.elem_start + req.elem_count;
+                behind.min(all_elements.len())
+            })
+            .min()
+            .unwrap_or(all_elements.len());
+
+        let Ok(mut target) = renderer.bind(&mut bg_tex) else {
+            state.blur_bg_fbo = Some((bg_tex, output_size));
+            return;
+        };
+        let mut dt = OutputDamageTracker::new(output_size, output_scale, Transform::Normal);
+        let _ = dt.render_output(
+            renderer,
+            &mut target,
+            0,
+            &all_elements[shallowest..],
+            [0.0f32, 0.0, 0.0, 1.0],
+        );
+    }
+
+    let mask_shader = state.blur_mask_shader.clone();
+
+    // ── Loop 1: crop + blur all dirty windows (bg_tex still intact) ──
+    for (i, req) in blur_requests.iter().enumerate() {
+        if !needs_recompute[i] { continue; }
+        let win_size = req.screen_rect.size;
+        if win_size.w <= 0 || win_size.h <= 0 { continue; }
+        let Some(cache) = state.blur_cache.get_mut(&req.surface_id) else { continue };
+
+        // Crop from shared bg_tex into cache.texture
         {
             let bg_src = bg_tex.clone();
             let Ok(mut target) = renderer.bind(&mut cache.texture) else { continue };
@@ -1337,9 +1399,9 @@ fn process_blur_requests(
             let _ = frame.finish();
         }
 
-        // 4. Run Kawase blur passes
+        // Run Kawase blur passes
         let offset = blur_strength * output_scale as f32;
-        if render_blur(
+        let _ = render_blur(
             renderer,
             &down_shader,
             &up_shader,
@@ -1347,12 +1409,25 @@ fn process_blur_requests(
             &mut cache.scratch,
             offset,
             blur_passes,
-        ).is_err() {
-            continue;
-        }
+        );
+    }
 
-        // 4a. Render surface elements to FBO to capture alpha channel
-        let surf_start = prefix + req.elem_start + index_shift;
+    // ── Loop 2: mask render + apply for all dirty windows (safe to overwrite bg_tex) ──
+    for (i, req) in blur_requests.iter().enumerate() {
+        if !needs_recompute[i] { continue; }
+        let win_size = req.screen_rect.size;
+        if win_size.w <= 0 || win_size.h <= 0 { continue; }
+
+        let prefix = match req.layer {
+            BlurLayer::Overlay => overlay_prefix,
+            BlurLayer::Top => top_prefix,
+            BlurLayer::Normal => normal_prefix,
+            BlurLayer::Widget => widget_prefix,
+        };
+
+        // Render surface elements to bg_tex to capture alpha channel
+        // index_shift is 0 here — element insertion hasn't happened yet
+        let surf_start = prefix + req.elem_start;
         let surf_end = (surf_start + req.elem_count).min(all_elements.len());
         {
             let Ok(mut target) = renderer.bind(&mut bg_tex) else { continue };
@@ -1366,7 +1441,9 @@ fn process_blur_requests(
             );
         }
 
-        // 4b. Crop surface region into cache.mask
+        let Some(cache) = state.blur_cache.get_mut(&req.surface_id) else { continue };
+
+        // Crop surface region into cache.mask
         {
             let bg_src = bg_tex.clone();
             let Ok(mut target) = renderer.bind(&mut cache.mask) else { continue };
@@ -1390,14 +1467,8 @@ fn process_blur_requests(
             let _ = frame.finish();
         }
 
-        // 4c. Masking pass — threshold surface alpha, then multiply blur by it.
-        // The threshold shader outputs alpha=1 where surface has any content (step),
-        // alpha=0 where fully transparent. BlendFuncSeparate(ZERO, SRC_ALPHA, ...)
-        // then multiplies the blur in-place by this binary mask.
-        let mask_shader = match state.blur_mask_shader.clone() {
-            Some(s) => s,
-            None => continue,
-        };
+        // Masking pass — threshold surface alpha, multiply blur by it
+        let Some(ref shader) = mask_shader else { continue };
         {
             use smithay::backend::renderer::gles::ffi;
             let mask_src = cache.mask.clone();
@@ -1418,17 +1489,31 @@ fn process_blur_requests(
                 &[],
                 Transform::Normal,
                 1.0,
-                Some(&mask_shader),
+                Some(shader),
                 &[],
             );
-            // Restore standard blend mode
             let _ = frame.with_context(|gl| unsafe {
                 gl.BlendFunc(ffi::ONE, ffi::ONE_MINUS_SRC_ALPHA);
             });
             let _ = frame.finish();
         }
 
-        // 5. Insert blur element BEHIND surface elements
+        cache.dirty = false;
+    }
+
+    // ── Insert blur elements for all windows (dirty or cached) ──
+    let mut index_shift = 0usize;
+    for req in blur_requests.iter() {
+        let win_size = req.screen_rect.size;
+        if win_size.w <= 0 || win_size.h <= 0 { continue; }
+        let Some(cache) = state.blur_cache.get(&req.surface_id) else { continue };
+
+        let prefix = match req.layer {
+            BlurLayer::Overlay => overlay_prefix,
+            BlurLayer::Top => top_prefix,
+            BlurLayer::Normal => normal_prefix,
+            BlurLayer::Widget => widget_prefix,
+        };
         let insert_idx = prefix + req.elem_start + req.elem_count + index_shift;
         let insert_idx = insert_idx.min(all_elements.len());
         let blur_elem = TextureRenderElement::from_static_texture(

@@ -14,5 +14,5 @@ void main() {
     sum += texture2D(tex, v_coords + u_halfpixel * u_offset);
     sum += texture2D(tex, v_coords + vec2(u_halfpixel.x, -u_halfpixel.y) * u_offset);
     sum += texture2D(tex, v_coords - vec2(u_halfpixel.x, -u_halfpixel.y) * u_offset);
-    gl_FragColor = sum / max(sum.a, 0.001);
+    gl_FragColor = sum / 8.0;
 }

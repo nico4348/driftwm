@@ -272,6 +272,11 @@ pub struct DriftWm {
     pub blur_cache: HashMap<smithay::reexports::wayland_server::backend::ObjectId, crate::render::BlurCache>,
     /// Cached full-output FBO for blur behind-content rendering — reused if output size matches.
     pub blur_bg_fbo: Option<(smithay::backend::renderer::gles::GlesTexture, Size<i32, smithay::utils::Physical>)>,
+    /// Generation counter for blur cache invalidation — bumped on scene-affecting changes.
+    pub blur_scene_generation: u64,
+    /// Structural generation — bumped on camera/move/z-order changes that should
+    /// debounce (reset cooldown). Content changes bump blur_scene_generation only.
+    pub blur_geometry_generation: u64,
     // -- global: cached CSD shadows (for corner-clipped CSD windows) --
     pub csd_shadows: HashMap<smithay::reexports::wayland_server::backend::ObjectId, (PixelShaderElement, (i32, i32))>,
     // -- per-output: cached render elements (!Send, stays on DriftWm) --
@@ -511,6 +516,8 @@ impl DriftWm {
             blur_mask_shader: None,
             blur_cache: HashMap::new(),
             blur_bg_fbo: None,
+            blur_scene_generation: 0,
+            blur_geometry_generation: 0,
             csd_shadows: HashMap::new(),
             cached_bg_elements: HashMap::new(),
             background_tile: None,
@@ -583,6 +590,8 @@ impl DriftWm {
     /// Push any `below` windows to the bottom of the z-order.
     /// Called after every `raise_element()` to maintain stacking.
     pub fn enforce_below_windows(&mut self) {
+        self.blur_scene_generation += 1;
+        self.blur_geometry_generation += 1;
         // Space stores elements in a vec where last = topmost.
         // raise_element pushes to the end (top). So we raise all
         // non-below windows in reverse order to preserve their relative
@@ -981,9 +990,17 @@ impl DriftWm {
     /// Sync each output's position to its camera, so render_output
     /// automatically applies the canvas→screen transform.
     pub fn update_output_from_camera(&mut self) {
+        let mut changed = false;
         for output in self.space.outputs().cloned().collect::<Vec<_>>() {
             let cam = output_state(&output).camera.to_i32_round();
+            if self.space.output_geometry(&output).map(|g| g.loc) != Some(cam) {
+                changed = true;
+            }
             self.space.map_output(&output, cam);
+        }
+        if changed {
+            self.blur_scene_generation += 1;
+            self.blur_geometry_generation += 1;
         }
     }
 
