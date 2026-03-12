@@ -6,6 +6,7 @@ XDG_DATA_DIRS="${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 
 lookup_desktop() {
     id="$1"
+    # Pass 1: match by filename (app_id.desktop or *app_id*.desktop)
     for dir in "$HOME/.local/share/applications" $(printf '%s' "$XDG_DATA_DIRS" | tr ':' ' '); do
         for f in "$dir/$id.desktop" "$dir"/*"$id"*.desktop; do
             [ -f "$f" ] || continue
@@ -13,6 +14,16 @@ lookup_desktop() {
             icon=$(grep -m1 '^Icon=' "$f" | cut -d= -f2-)
             [ -n "$name" ] && printf '%s\t%s' "$name" "${icon:-$id}" && return
         done
+    done
+    # Pass 2: match by StartupWMClass (e.g. REAPER -> cockos-reaper.desktop)
+    for dir in "$HOME/.local/share/applications" $(printf '%s' "$XDG_DATA_DIRS" | tr ':' ' '); do
+        [ -d "$dir" ] || continue
+        f=$(grep -rl "^StartupWMClass=$id$" "$dir"/*.desktop 2>/dev/null | head -1)
+        if [ -n "$f" ]; then
+            name=$(grep -m1 '^Name=' "$f" | cut -d= -f2-)
+            icon=$(grep -m1 '^Icon=' "$f" | cut -d= -f2-)
+            [ -n "$name" ] && printf '%s\t%s' "$name" "${icon:-$id}" && return
+        fi
     done
     printf '%s\t%s' "$id" "$id"
 }
