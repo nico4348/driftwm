@@ -72,7 +72,7 @@
 # corner_radius = 8              # CSD window corner rounding radius in pixels
 
 [effects]
-# blur_radius = 3               # number of Kawase down+up passes (default: 3)
+# blur_radius = 2               # number of Kawase down+up passes (default: 2)
 # blur_strength = 1.1            # per-pass texel spread (default: 1.1)
 
 [output]

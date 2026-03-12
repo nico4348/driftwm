@@ -1293,7 +1293,8 @@ fn process_blur_requests(
             continue;
         }
 
-        if !state.blur_cache.contains_key(&req.surface_id) {
+        let is_new = !state.blur_cache.contains_key(&req.surface_id);
+        if is_new {
             if let Some(c) = BlurCache::new(renderer, win_size) {
                 state.blur_cache.insert(req.surface_id.clone(), c);
             } else {
@@ -1317,7 +1318,7 @@ fn process_blur_requests(
         if content_changed || geom_changed {
             cache.dirty = true;
         }
-        if geom_changed {
+        if geom_changed && !is_new {
             cache.cooldown = BLUR_COOLDOWN_FRAMES;
         }
 

@@ -562,7 +562,7 @@ fn parse_window_rule(r: WindowRuleFile) -> Option<WindowRule> {
 
 fn parse_effects_config(raw: EffectsFileConfig) -> EffectsConfig {
     EffectsConfig {
-        blur_radius: raw.blur_radius.unwrap_or(3),
+        blur_radius: raw.blur_radius.unwrap_or(2),
         blur_strength: raw.blur_strength.unwrap_or(1.1),
     }
 }

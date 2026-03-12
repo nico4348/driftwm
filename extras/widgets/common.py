@@ -444,6 +444,25 @@ def brightness_icon(pct: int) -> str:
     return ICON["bright_low"]
 
 
+def _bt_battery(mac: str) -> int | None:
+    """Query battery percentage for a BT device via bluetoothctl info."""
+    try:
+        result = subprocess.run(
+            ["bluetoothctl", "info", mac],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        for line in result.stdout.splitlines():
+            if "Battery Percentage" in line:
+                # Format: "	Battery Percentage: 0x42 (66)"
+                return int(line.rsplit("(", 1)[1].rstrip(")"))
+    except (FileNotFoundError, subprocess.TimeoutExpired, IndexError, ValueError):
+        pass
+    return None
+
+
 def get_bluetooth() -> str | None:
     """Returns formatted bluetooth status string with icon, or None."""
     try:
@@ -473,7 +492,12 @@ def get_bluetooth() -> str | None:
         if not devices:
             return f"{ICON['bt_on']}  on"
         if len(devices) == 1:
-            return f"{ICON['bt_connected']}  {devices[0][:16]}"
+            mac = connected.stdout.strip().splitlines()[0].split(" ", 2)[1]
+            bat = _bt_battery(mac)
+            name = devices[0][:16]
+            if bat is not None:
+                return f"{ICON['bt_connected']}  {name} ({bat}%)"
+            return f"{ICON['bt_connected']}  {name}"
         return f"{ICON['bt_connected']}  {len(devices)} devices"
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None

@@ -386,7 +386,7 @@ pub struct EffectsConfig {
 impl Default for EffectsConfig {
     fn default() -> Self {
         Self {
-            blur_radius: 3,
+            blur_radius: 2,
             blur_strength: 1.1,
         }
     }
