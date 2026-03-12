@@ -44,6 +44,7 @@ color="#FDF6E3"
 "XF86AudioMute" = "spawn swayosd-client --output-volume mute-toggle"
 "XF86MonBrightnessUp" = "spawn swayosd-client --brightness raise"
 "XF86MonBrightnessDown" = "spawn swayosd-client --brightness lower"
+"mod+s" = "exec ~/Documents/work/scripts/driftwm/extras/scripts/window-search.sh"
 
 [[outputs]]
 name = "HDMI-A-1"
