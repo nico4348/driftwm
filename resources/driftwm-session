@@ -1,19 +1,22 @@
 #!/bin/sh
 # driftwm-session — launched by display manager (GDM) instead of bare driftwm.
 # Re-execs through login shell to pick up .profile / PAM env vars,
-# then starts gnome-keyring-daemon to ensure the login keyring is unlocked.
+# then imports the full environment into systemd/D-Bus so services like
+# gnome-keyring (PAM-unlocked by GDM) are visible to all activated units.
 
 if [ -z "$_DRIFTWM_WRAPPER" ]; then
     export _DRIFTWM_WRAPPER=1
     exec "$SHELL" -l -c "$0 $@"
 fi
 
-# Start/reconnect gnome-keyring and capture its env vars.
-# --start is idempotent: if the daemon is already running (PAM-started),
-# it just prints the env vars. This re-sends the unlock token that may
-# have been lost during GDM's greeter->session transition.
-eval $(gnome-keyring-daemon --start --components=pkcs11,secrets,ssh)
-export SSH_AUTH_SOCK GNOME_KEYRING_CONTROL
+# Import the full login manager environment into systemd and D-Bus.
+# GDM's PAM already started and unlocked gnome-keyring — this makes
+# SSH_AUTH_SOCK, GNOME_KEYRING_CONTROL, etc. visible to D-Bus-activated
+# services so they find the unlocked daemon instead of socket-activating
+# a fresh locked one.
+systemctl --user import-environment
+hash dbus-update-activation-environment 2>/dev/null && \
+    dbus-update-activation-environment --all
 
 # Notify systemd that the graphical session is starting, then active.
 # Services with PartOf=graphical-session.target (waybar, portals, etc.)
@@ -31,5 +34,3 @@ STATUS=$?
 systemctl --user stop graphical-session.target
 systemctl --user stop graphical-session-pre.target
 systemctl --user unset-environment WAYLAND_DISPLAY DISPLAY
-
-exit $STATUS
