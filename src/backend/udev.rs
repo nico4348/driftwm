@@ -490,8 +490,9 @@ pub fn init_udev(
                                         &surface.output,
                                     );
 
-                                    // Stop capture sessions for this output
+                                    // Stop capture/screencopy sessions for this output
                                     data.image_copy_capture_state.remove_output(&surface.output);
+                                    data.screencopy_state.remove_output(&surface.output);
 
                                     // Close layer surfaces on this output so clients
                                     // (swayosd, waybar, etc.) can recreate on remaining outputs
