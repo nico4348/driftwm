@@ -474,7 +474,7 @@
 .widget-mpris .widget-mpris-player {
     padding: 8px;
     margin: 8px 12px;
-    background-color: @mpris-album-art-overlay;
+    background-color: @noti-bg;
     border-radius: 12px;
     box-shadow: none;
 }
