@@ -392,6 +392,8 @@ pub struct DriftWm {
     pub focused_output: Option<Output>,
     /// The output a gesture started on (pinned for duration of gesture).
     pub gesture_output: Option<Output>,
+    /// Fullscreen window that was exited by a gesture (saved before execute_action sees it).
+    pub gesture_exited_fullscreen: Option<Window>,
     /// Output names kept as virtual placeholders when all physical outputs disconnect.
     /// Prevents `active_output().unwrap()` panics by keeping the output in the Space.
     pub disconnected_outputs: HashSet<String>,
@@ -582,6 +584,7 @@ impl DriftWm {
             last_animation_tick: Instant::now(),
             focused_output: None,
             gesture_output: None,
+            gesture_exited_fullscreen: None,
             disconnected_outputs: HashSet::new(),
             output_config_dirty: false,
             xwayland_shell_state,

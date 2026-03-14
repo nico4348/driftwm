@@ -11,11 +11,16 @@ use crate::state::{DriftWm, FocusTarget, HomeReturn};
 
 impl DriftWm {
     pub fn execute_action(&mut self, action: &Action) {
-        // Snapshot fullscreen window before the guard exits it
-        let was_fullscreen = self.active_fullscreen().map(|fs| fs.window.clone());
+        // Snapshot fullscreen window before the guard exits it.
+        // Also check gesture_exited_fullscreen (set by exit_fullscreen_for_gesture
+        // which runs before execute_action in the gesture path).
+        let was_fullscreen = self.active_fullscreen().map(|fs| fs.window.clone())
+            .or_else(|| self.gesture_exited_fullscreen.take());
 
-        // Any action except ToggleFullscreen exits fullscreen first
-        if self.is_fullscreen() && !matches!(action, Action::ToggleFullscreen) {
+        // Any action except ToggleFullscreen/Spawn/ReloadConfig exits fullscreen first
+        if self.is_fullscreen()
+            && !matches!(action, Action::ToggleFullscreen | Action::Spawn(_) | Action::ReloadConfig)
+        {
             self.exit_fullscreen();
         }
 

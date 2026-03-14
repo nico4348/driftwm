@@ -35,7 +35,7 @@ color="#FDF6E3"
 
 [keybindings]
 "mod+return" = "exec ptyxis -s"
-"mod+d" = "spawn fuzzel"
+"mod+d" = "exec fuzzel"
 "mod+l" = "spawn ~/Documents/work/scripts/driftwm/extras/scripts/lock.sh"
 "mod+n" = "spawn swaync-client -t"
 # swayosd instead of default wpctl/brightnessctl
@@ -44,7 +44,7 @@ color="#FDF6E3"
 "XF86AudioMute" = "spawn swayosd-client --output-volume mute-toggle"
 "XF86MonBrightnessUp" = "spawn swayosd-client --brightness raise"
 "XF86MonBrightnessDown" = "spawn swayosd-client --brightness lower"
-"mod+s" = "spawn ~/Documents/work/scripts/driftwm/extras/scripts/window-search.sh"
+"mod+s" = "exec ~/Documents/work/scripts/driftwm/extras/scripts/window-search.sh"
 
 [[outputs]]
 name = "HDMI-A-1"
@@ -145,4 +145,3 @@ blur = true
 app_id = "Alacritty"
 opacity = 0.8
 blur = true
-

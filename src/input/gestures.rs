@@ -82,6 +82,7 @@ impl DriftWm {
     // ── Swipe ──────────────────────────────────────────────────────────
 
     fn exit_fullscreen_for_gesture(&mut self) {
+        self.gesture_exited_fullscreen = self.active_fullscreen().map(|fs| fs.window.clone());
         let pointer = self.seat.get_pointer().unwrap();
         let pos = pointer.current_location();
         self.exit_fullscreen_remap_pointer(pos);

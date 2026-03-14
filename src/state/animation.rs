@@ -422,6 +422,7 @@ impl DriftWm {
             let pos = self.seat.get_pointer().unwrap().current_location();
             self.warp_pointer(pos + delta);
         }
+
     }
 
     fn tick_zoom_animation_on(&mut self, output: &Output, is_active: bool, dt: Duration) {
@@ -505,6 +506,5 @@ impl DriftWm {
                 self.warp_pointer(new_pos);
             }
         }
-
     }
 }

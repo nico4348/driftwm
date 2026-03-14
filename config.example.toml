@@ -93,8 +93,8 @@
 # Keysyms are XKB names (case-insensitive): return, tab, up, a, equal, etc.
 #
 # Actions:
-#   exec <cmd>              — launch an app (shows loading cursor until window appears)
-#   spawn <cmd>             — run a command without loading cursor (toggles, OSD, screenshots)
+#   exec <cmd>              — launch an app (shows loading cursor until window appears, exits fullscreen)
+#   spawn <cmd>             — run a command without loading cursor and exiting fullscreen (toggles, OSD, screenshots)
 #   close-window            — close the focused window
 #   nudge-window <dir>      — move focused window by nudge_step px
 #   pan-viewport <dir>      — pan camera by pan_step px
