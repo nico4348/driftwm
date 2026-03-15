@@ -441,9 +441,9 @@ pub fn build_tile_background_elements(
                     ),
                 ));
             }
-            tx += tw as i64;
+            tx += (tw - 1) as i64;
         }
-        ty += th as i64;
+        ty += (th - 1) as i64;
     }
     elements
 }
