@@ -165,12 +165,7 @@ windows teleport to the target viewport's canvas position. Hotplug just works.
 
 ### Panels, docks & taskbars
 
-<!--
-  Video (~8s):
-  1. Show waybar at top, click a window entry — viewport pans to it
-  2. Show fuzzel launcher opening an app
-  3. Show fuzzel window-search script — search open windows, select one, viewport navigates to it
--->
+https://github.com/user-attachments/assets/6216cc20-e995-4688-b988-21bff687dc0f
 
 Layer shell surfaces (waybar, fuzzel, mako) work as expected. Foreign toplevel
 management means your dock/taskbar shows all windows — click one and the
