@@ -765,7 +765,14 @@ fn create_surface(
     };
     let scale_val = output_cfg
         .and_then(|c| c.scale)
-        .unwrap_or(state.config.output_scale);
+        .unwrap_or_else(|| {
+            tracing::info!(
+                "No [[outputs]] entry for '{}' — defaulting to scale 1.0. \
+                 Add an [[outputs]] section to config.toml to set a custom scale.",
+                connector_name,
+            );
+            1.0
+        });
     let scale = smithay::output::Scale::Fractional(scale_val);
     let transform = output_cfg
         .and_then(|c| c.transform)

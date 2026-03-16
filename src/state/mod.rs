@@ -1307,9 +1307,6 @@ impl DriftWm {
                 }
             }
         }
-        if new_config.output_scale != self.config.output_scale {
-            tracing::info!("Config reload: output scale changes require restart");
-        }
         if new_config.autostart != self.config.autostart {
             tracing::info!("Config reload: autostart changes only apply at startup");
         }

@@ -58,8 +58,6 @@ pub struct Config {
     pub zoom_step: f64,
     /// Padding (canvas pixels) around the bounding box for ZoomToFit.
     pub zoom_fit_padding: f64,
-    /// Output scale factor for the udev backend (1.0, 1.5, 2.0, etc).
-    pub output_scale: f64,
     pub snap_enabled: bool,
     pub snap_gap: f64,
     pub snap_distance: f64,
@@ -393,7 +391,6 @@ impl Config {
             cycle_modifier,
             zoom_step: raw.zoom.step.unwrap_or(1.1),
             zoom_fit_padding: raw.zoom.fit_padding.unwrap_or(100.0),
-            output_scale: raw.output.scale.unwrap_or(1.0),
             snap_enabled: raw.snap.enabled.unwrap_or(true),
             snap_gap: raw.snap.gap.unwrap_or(12.0),
             snap_distance: raw.snap.distance.unwrap_or(24.0),

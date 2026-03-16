@@ -115,7 +115,6 @@ pub(super) struct SnapConfig {
 #[derive(Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct OutputConfig {
-    pub scale: Option<f64>,
     pub outline: Option<OutputOutlineConfig>,
 }
 
