@@ -95,7 +95,7 @@ action (launching an app, navigating) naturally exits it.
 | `Mod` + MMB click / `Mod+F`   | Toggle fullscreen             |
 | `Mod+Shift` + arrow           | Nudge window 20px             |
 
-### Canvas background
+### Infinite background
 
 https://github.com/user-attachments/assets/9064883c-86ea-4db6-a40a-0418d2ee2f5e
 
@@ -285,7 +285,7 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the full compositor design specificatio
 ## Example setup
 
 driftwm is just a compositor — everything else is standard Wayland tooling.
-If you're new to standalone Wayland compositors, here's what you'll want:
+Here are some tools that work well with it:
 
 | Tool                  | Purpose                                                        |
 | --------------------- | -------------------------------------------------------------- |
@@ -304,8 +304,6 @@ The [`extras/`](extras/) directory contains a complete setup — driftwm config,
 GLSL shader wallpapers, Python widgets (clock, calendar, system stats, power
 menu), waybar with taskbar/tray, fuzzel window-search script, and window rules
 tying it all together. Use it as a starting point or steal pieces.
-
-See [`extras/README.md`](extras/README.md) for the full breakdown.
 
 ## License
 
