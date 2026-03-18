@@ -54,7 +54,7 @@
     {
       packages.${system}.default = pkgs.rustPlatform.buildRustPackage rec {
         pname = "driftwm";
-        version = "0.1.0";
+        version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
 
         src = pkgs.lib.cleanSourceWith {
           src = ./.;
