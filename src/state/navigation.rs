@@ -32,9 +32,9 @@ impl DriftWm {
         let window_loc = self.space.element_location(window).unwrap_or_default();
         let window_size = window.geometry().size;
         let bar = self.window_ssd_bar(window);
-        let viewport_size = self.get_viewport_size();
+        let vc = self.usable_center_screen();
         let target = driftwm::canvas::camera_to_center_window(
-            window_loc, window_size, viewport_size, target_zoom, bar,
+            window_loc, window_size, vc, target_zoom, bar,
         );
 
         let window_center = self.window_visual_center(window).unwrap_or_else(|| {
@@ -54,7 +54,7 @@ impl DriftWm {
     /// Dynamic minimum zoom based on the current window layout.
     /// Allows zooming out far enough to see all windows.
     pub fn min_zoom(&self) -> f64 {
-        let viewport = self.get_viewport_size();
+        let viewport = self.get_usable_area().size;
         driftwm::canvas::dynamic_min_zoom(
             self.space.elements().filter(|w| {
                 !w.wl_surface().and_then(|s| driftwm::config::applied_rule(&s))

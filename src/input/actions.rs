@@ -124,11 +124,11 @@ impl DriftWm {
                     self.navigate_to_window(&window, true);
                 } else {
                     // No focused non-widget window — find and focus the closest to viewport center
-                    let viewport = self.get_viewport_size();
+                    let vc = self.usable_center_screen();
                     let camera = self.camera();
                     let zoom = self.zoom();
-                    let center_x = camera.x + viewport.w as f64 / (2.0 * zoom);
-                    let center_y = camera.y + viewport.h as f64 / (2.0 * zoom);
+                    let center_x = camera.x + vc.x / zoom;
+                    let center_y = camera.y + vc.y / zoom;
                     let closest = self
                         .space
                         .elements()
@@ -175,11 +175,12 @@ impl DriftWm {
                 });
 
                 let viewport_size = self.get_viewport_size();
+                let vc = self.usable_center_screen();
                 let camera = self.camera();
                 let zoom = self.zoom();
                 let viewport_center = Point::from((
-                    camera.x + viewport_size.w as f64 / (2.0 * zoom),
-                    camera.y + viewport_size.h as f64 / (2.0 * zoom),
+                    camera.x + vc.x / zoom,
+                    camera.y + vc.y / zoom,
                 ));
 
                 let (origin, skip) = if let Some(ref w) = focused {
@@ -241,11 +242,11 @@ impl DriftWm {
                         let keyboard = self.seat.get_keyboard().unwrap();
                         keyboard.set_focus(self, None::<FocusTarget>, serial);
                         self.with_output_state(|os| os.momentum.stop());
-                        let vp = self.get_viewport_size();
+                        let vc = self.usable_center_screen();
                         let zoom = self.zoom();
                         self.set_camera_target(Some(Point::from((
-                            p.x - vp.w as f64 / (2.0 * zoom),
-                            p.y - vp.h as f64 / (2.0 * zoom),
+                            p.x - vc.x / zoom,
+                            p.y - vc.y / zoom,
                         ))));
                     }
                     None => {}
@@ -294,10 +295,10 @@ impl DriftWm {
                             self.set_zoom(ret.zoom);
                             self.enter_fullscreen(ret.fullscreen_window.as_ref().unwrap());
                         } else {
-                            let vp = self.get_viewport_size();
+                            let vc = self.usable_center_screen();
                             self.set_zoom_animation_center(Some(Point::from((
-                                ret.camera.x + vp.w as f64 / (2.0 * ret.zoom),
-                                ret.camera.y + vp.h as f64 / (2.0 * ret.zoom),
+                                ret.camera.x + vc.x / ret.zoom,
+                                ret.camera.y + vc.y / ret.zoom,
                             ))));
                             self.set_camera_target(Some(ret.camera));
                             self.set_zoom_target(Some(ret.zoom));
@@ -313,21 +314,19 @@ impl DriftWm {
                         });
                     });
                     self.set_overview_return(None);
-                    let home = Point::from((
-                        -(viewport_size.w as f64) / 2.0,
-                        -(viewport_size.h as f64) / 2.0,
-                    ));
+                    let vc = self.usable_center_screen();
+                    let home = Point::from((-vc.x, -vc.y));
                     self.set_zoom_animation_center(Some(Point::from((0.0, 0.0))));
                     self.set_camera_target(Some(home));
                     self.set_zoom_target(Some(1.0));
                 }
             }
             Action::GoToPosition(x, y) => {
-                let viewport = self.get_viewport_size();
+                let vc = self.usable_center_screen();
                 let zoom = self.zoom();
                 let target_camera = Point::from((
-                    x - viewport.w as f64 / (2.0 * zoom),
-                    -y - viewport.h as f64 / (2.0 * zoom),
+                    x - vc.x / zoom,
+                    -y - vc.y / zoom,
                 ));
                 self.set_overview_return(None);
                 self.set_camera_target(Some(target_camera));
@@ -350,16 +349,17 @@ impl DriftWm {
                 self.set_overview_return(None);
                 if let Some((saved_camera, saved_zoom)) = overview_ret {
                     // Toggle back from overview
-                    let vp = self.get_viewport_size();
+                    let vc = self.usable_center_screen();
                     self.set_zoom_animation_center(Some(Point::from((
-                        saved_camera.x + vp.w as f64 / (2.0 * saved_zoom),
-                        saved_camera.y + vp.h as f64 / (2.0 * saved_zoom),
+                        saved_camera.x + vc.x / saved_zoom,
+                        saved_camera.y + vc.y / saved_zoom,
                     ))));
                     self.set_camera_target(Some(saved_camera));
                     self.set_zoom_target(Some(saved_zoom));
                 } else {
                     // Compute bounding box of all windows
-                    let viewport = self.get_viewport_size();
+                    let usable = self.get_usable_area();
+                    let vc = self.usable_center_screen();
                     let windows = self.space.elements().filter(|w| {
                         !w.wl_surface().as_ref().and_then(|s| driftwm::config::applied_rule(s))
                             .is_some_and(|r| r.widget)
@@ -374,14 +374,13 @@ impl DriftWm {
                     let bbox = canvas::all_windows_bbox(windows.chain(anchors));
                     if let Some(bbox) = bbox {
                         let fit_zoom = canvas::zoom_to_fit(
-                            bbox, viewport, self.config.zoom_fit_padding,
+                            bbox, usable.size, self.config.zoom_fit_padding,
                         );
-                        // Center camera on bbox center
                         let bbox_cx = bbox.loc.x as f64 + bbox.size.w as f64 / 2.0;
                         let bbox_cy = bbox.loc.y as f64 + bbox.size.h as f64 / 2.0;
                         let new_camera: Point<f64, smithay::utils::Logical> = Point::from((
-                            bbox_cx - viewport.w as f64 / (2.0 * fit_zoom),
-                            bbox_cy - viewport.h as f64 / (2.0 * fit_zoom),
+                            bbox_cx - vc.x / fit_zoom,
+                            bbox_cy - vc.y / fit_zoom,
                         ));
                         self.set_overview_return(Some((self.camera(), self.zoom())));
                         self.set_zoom_animation_center(Some(Point::from((bbox_cx, bbox_cy))));
@@ -437,14 +436,14 @@ impl DriftWm {
                         && let Some(from_output) = self.output_for_window(&window)
                         && let Some(target_output) = self.output_in_direction(&from_output, dir)
                     {
-                        // Compute target output's viewport center in canvas coords
-                        let (target_cam, target_zoom, target_size) = {
+                        // Compute target output's usable area center in canvas coords
+                        let (target_cam, target_zoom) = {
                             let os = crate::state::output_state(&target_output);
-                            let sz = crate::state::output_logical_size(&target_output);
-                            (os.camera, os.zoom, sz)
+                            (os.camera, os.zoom)
                         };
-                        let center_x = target_cam.x + target_size.w as f64 / (2.0 * target_zoom);
-                        let center_y = target_cam.y + target_size.h as f64 / (2.0 * target_zoom);
+                        let target_vc = crate::state::usable_center_for_output(&target_output);
+                        let center_x = target_cam.x + target_vc.x / target_zoom;
+                        let center_y = target_cam.y + target_vc.y / target_zoom;
                         let geo = window.geometry();
                         let new_loc = Point::from((
                             (center_x - geo.size.w as f64 / 2.0) as i32,
@@ -469,21 +468,17 @@ impl DriftWm {
     /// Animate zoom to `target_zoom`, anchored on viewport center (for keyboard actions).
     fn zoom_to_anchored(&mut self, target_zoom: f64) {
         self.set_overview_return(None);
-        let viewport = self.get_viewport_size();
+        let vc = self.usable_center_screen();
         let camera = self.camera();
         let zoom = self.zoom();
-        let vp_center_canvas = Point::from((
-            camera.x + viewport.w as f64 / (2.0 * zoom),
-            camera.y + viewport.h as f64 / (2.0 * zoom),
-        ));
-        let vp_center_screen = Point::from((
-            viewport.w as f64 / 2.0,
-            viewport.h as f64 / 2.0,
+        let vc_canvas = Point::from((
+            camera.x + vc.x / zoom,
+            camera.y + vc.y / zoom,
         ));
         let new_camera = canvas::zoom_anchor_camera(
-            vp_center_canvas, vp_center_screen, target_zoom,
+            vc_canvas, vc, target_zoom,
         );
-        self.set_zoom_animation_center(Some(vp_center_canvas));
+        self.set_zoom_animation_center(Some(vc_canvas));
         self.set_zoom_target(Some(target_zoom));
         self.set_camera_target(Some(new_camera));
     }

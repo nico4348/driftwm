@@ -16,7 +16,7 @@ use smithay::{
             protocol::wl_surface::WlSurface,
         },
     },
-    utils::{Logical, Point, Size},
+    utils::{Logical, Point, Rectangle, Size},
     wayland::output::OutputManagerState,
     wayland::{
         compositor::{CompositorClientState, CompositorState},
@@ -221,6 +221,16 @@ pub fn init_output_state(
             home_return: None,
         })
     });
+}
+
+/// Screen-space center of an output's usable area (for per-output animation paths).
+pub fn usable_center_for_output(output: &Output) -> Point<f64, Logical> {
+    let map = smithay::desktop::layer_map_for_output(output);
+    let zone = map.non_exclusive_zone();
+    Point::from((
+        zone.loc.x as f64 + zone.size.w as f64 / 2.0,
+        zone.loc.y as f64 + zone.size.h as f64 / 2.0,
+    ))
 }
 
 /// Logical output size accounting for transform (90°/270° swap width/height).
@@ -1175,6 +1185,26 @@ impl DriftWm {
         self.active_output()
             .map(|o| output_logical_size(&o))
             .unwrap_or((1, 1).into())
+    }
+
+    /// Viewport area minus layer-shell exclusive zones (panels, bars).
+    pub fn get_usable_area(&self) -> Rectangle<i32, Logical> {
+        self.active_output()
+            .map(|o| {
+                let map = smithay::desktop::layer_map_for_output(&o);
+                map.non_exclusive_zone()
+            })
+            .unwrap_or_else(|| Rectangle::new((0, 0).into(), (1, 1).into()))
+    }
+
+    /// Screen-space center of the usable area (accounts for panel exclusive zones).
+    /// Without panels, equals (viewport.w/2, viewport.h/2).
+    pub fn usable_center_screen(&self) -> Point<f64, Logical> {
+        let usable = self.get_usable_area();
+        Point::from((
+            usable.loc.x as f64 + usable.size.w as f64 / 2.0,
+            usable.loc.y as f64 + usable.size.h as f64 / 2.0,
+        ))
     }
 
     /// SSD title bar height for a window (0 for CSD/borderless).

@@ -254,18 +254,18 @@ impl DriftWm {
 
         if let Some(target_center) = self.zoom_animation_center() {
             // Combined zoom+camera: lerp the on-screen center, derive camera
-            let vp = self.get_viewport_size();
+            let vc = self.usable_center_screen();
             let current_center: Point<f64, Logical> = Point::from((
-                old_camera.x + vp.w as f64 / (2.0 * old_zoom),
-                old_camera.y + vp.h as f64 / (2.0 * old_zoom),
+                old_camera.x + vc.x / old_zoom,
+                old_camera.y + vc.y / old_zoom,
             ));
             let cx = current_center.x + (target_center.x - current_center.x) * factor;
             let cy = current_center.y + (target_center.y - current_center.y) * factor;
 
             let cur_zoom = self.zoom();
             self.set_camera(Point::from((
-                cx - vp.w as f64 / (2.0 * cur_zoom),
-                cy - vp.h as f64 / (2.0 * cur_zoom),
+                cx - vc.x / cur_zoom,
+                cy - vc.y / cur_zoom,
             )));
             self.update_output_from_camera();
 
@@ -276,8 +276,8 @@ impl DriftWm {
                 // Zoom snapped — hand off final convergence to camera_animation
                 let cur_zoom = self.zoom();
                 let final_camera = Point::from((
-                    target_center.x - vp.w as f64 / (2.0 * cur_zoom),
-                    target_center.y - vp.h as f64 / (2.0 * cur_zoom),
+                    target_center.x - vc.x / cur_zoom,
+                    target_center.y - vc.y / cur_zoom,
                 ));
                 self.set_zoom_animation_center(None);
                 self.set_camera_target(Some(final_camera));
@@ -448,11 +448,11 @@ impl DriftWm {
         }
 
         if let Some(target_center) = anim_center {
-            let vp = super::output_logical_size(output);
+            let vc = super::usable_center_for_output(output);
 
             let current_center: Point<f64, Logical> = Point::from((
-                old_camera.x + vp.w as f64 / (2.0 * old_zoom),
-                old_camera.y + vp.h as f64 / (2.0 * old_zoom),
+                old_camera.x + vc.x / old_zoom,
+                old_camera.y + vc.y / old_zoom,
             ));
             let cx = current_center.x + (target_center.x - current_center.x) * factor;
             let cy = current_center.y + (target_center.y - current_center.y) * factor;
@@ -461,8 +461,8 @@ impl DriftWm {
                 let mut os = output_state(output);
                 let cur_zoom = os.zoom;
                 os.camera = Point::from((
-                    cx - vp.w as f64 / (2.0 * cur_zoom),
-                    cy - vp.h as f64 / (2.0 * cur_zoom),
+                    cx - vc.x / cur_zoom,
+                    cy - vc.y / cur_zoom,
                 ));
                 // Suppress camera_animation — we set camera directly
                 os.camera_target = None;
@@ -470,8 +470,8 @@ impl DriftWm {
                 if os.zoom_target.is_none() {
                     // Zoom snapped — hand off final convergence to camera_animation
                     let final_camera = Point::from((
-                        target_center.x - vp.w as f64 / (2.0 * cur_zoom),
-                        target_center.y - vp.h as f64 / (2.0 * cur_zoom),
+                        target_center.x - vc.x / cur_zoom,
+                        target_center.y - vc.y / cur_zoom,
                     ));
                     os.zoom_animation_center = None;
                     os.camera_target = Some(final_camera);

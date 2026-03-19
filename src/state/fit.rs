@@ -57,26 +57,27 @@ impl DriftWm {
         });
 
         // Compute fit size at zoom=1.0 — navigate_to_window will animate there
-        let viewport = self.get_viewport_size();
+        let usable = self.get_usable_area();
         let gap = self.config.snap_gap;
         let bar = self.window_ssd_bar(window);
 
-        let target_w = viewport.w - (2.0 * gap) as i32;
-        let target_h = viewport.h - (2.0 * gap) as i32 - bar;
+        let target_w = usable.size.w - (2.0 * gap) as i32;
+        let target_h = usable.size.h - (2.0 * gap) as i32 - bar;
         let target_size = Size::from((target_w, target_h));
 
-        // Camera that centers the fitted window at zoom=1.0:
-        // visual_center = old center, camera = visual_center - viewport/2
+        // Camera: center the fitted window within the usable screen area
+        let usable_center_x = usable.loc.x as f64 + usable.size.w as f64 / 2.0;
+        let usable_center_y = usable.loc.y as f64 + usable.size.h as f64 / 2.0;
         let center = self.window_visual_center(window).unwrap_or_default();
         let target_camera = Point::from((
-            center.x - viewport.w as f64 / 2.0,
-            center.y - viewport.h as f64 / 2.0,
+            center.x - usable_center_x,
+            center.y - usable_center_y,
         ));
 
-        // Window location: gap from the target camera edges
+        // Window location: usable area offset + gap from the target camera edges
         let new_loc = Point::from((
-            target_camera.x as i32 + gap as i32,
-            target_camera.y as i32 + gap as i32 + bar,
+            target_camera.x as i32 + usable.loc.x + gap as i32,
+            target_camera.y as i32 + usable.loc.y + gap as i32 + bar,
         ));
 
         window.enter_fit_configure(target_size);

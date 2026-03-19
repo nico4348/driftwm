@@ -36,24 +36,22 @@ pub fn canvas_to_screen(canvas: CanvasPos, camera: Point<f64, Logical>, zoom: f6
     )))
 }
 
-/// Compute the camera position that centers a window in the viewport.
-/// At zoom < 1.0, the viewport covers more canvas area, so the "center"
-/// shifts outward: viewport_center_canvas = viewport_size / (2 * zoom).
+/// Compute the camera position that centers a window at `screen_center` on screen.
+/// `screen_center` is the screen-space point where the window center should appear
+/// (typically the usable area center, accounting for panel exclusive zones).
 pub fn camera_to_center_window(
     window_loc: Point<i32, Logical>,
     window_size: Size<i32, Logical>,
-    viewport_size: Size<i32, Logical>,
+    screen_center: Point<f64, Logical>,
     zoom: f64,
     bar: i32,
 ) -> Point<f64, Logical> {
     let window_center_x = window_loc.x as f64 + window_size.w as f64 / 2.0;
     let bar_f = bar as f64;
     let window_center_y = window_loc.y as f64 - bar_f + (window_size.h as f64 + bar_f) / 2.0;
-    let viewport_center_x = viewport_size.w as f64 / (2.0 * zoom);
-    let viewport_center_y = viewport_size.h as f64 / (2.0 * zoom);
     Point::from((
-        window_center_x - viewport_center_x,
-        window_center_y - viewport_center_y,
+        window_center_x - screen_center.x / zoom,
+        window_center_y - screen_center.y / zoom,
     ))
 }
 
@@ -384,6 +382,10 @@ mod tests {
     fn vp(w: i32, h: i32) -> Size<i32, Logical> {
         Size::from((w, h))
     }
+    /// Screen center point for a viewport of given size (no panels).
+    fn vp_center(w: i32, h: i32) -> Point<f64, Logical> {
+        Point::from((w as f64 / 2.0, h as f64 / 2.0))
+    }
 
     #[test]
     fn fully_visible() {
@@ -471,7 +473,7 @@ mod tests {
     fn center_window_zoom_1() {
         // 200x100 window at (300, 400), 1920x1080 viewport, zoom 1.0
         let cam = camera_to_center_window(
-            (300, 400).into(), (200, 100).into(), vp(1920, 1080), 1.0, 0,
+            (300, 400).into(), (200, 100).into(), vp_center(1920, 1080), 1.0, 0,
         );
         // window center: (400, 450), viewport center offset: (960, 540)
         assert!((cam.x - (400.0 - 960.0)).abs() < 1e-9);
@@ -482,7 +484,7 @@ mod tests {
     fn center_window_zoomed_out() {
         // At zoom 0.5, viewport center = viewport_size / (2 * 0.5) = viewport_size
         let cam = camera_to_center_window(
-            (0, 0).into(), (100, 100).into(), vp(1000, 1000), 0.5, 0,
+            (0, 0).into(), (100, 100).into(), vp_center(1000, 1000), 0.5, 0,
         );
         // window center: (50, 50), viewport center offset at 0.5: (1000, 1000)
         assert!((cam.x - (50.0 - 1000.0)).abs() < 1e-9);
