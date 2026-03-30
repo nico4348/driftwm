@@ -158,7 +158,7 @@ double-tap to maximize.
 Multiple monitors are independent viewports on the same canvas — different
 zoom levels, overlapping views. An outline on each monitor shows where the
 other monitors' viewports are. Cursor crosses between monitors freely; dragged
-windows teleport to the target viewport's canvas position. Hotplug just works.
+windows teleport to the target viewport's canvas position.
 
 | Input             | Action                         |
 | ----------------- | ------------------------------ |
