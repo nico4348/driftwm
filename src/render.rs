@@ -1065,7 +1065,7 @@ pub fn compose_frame(
                 r.decoration != driftwm::config::DecorationMode::Client
             });
 
-            if !rule_forced {
+            if !rule_forced && !is_fullscreen {
                 if radius > 0.0 {
                     let toplevel_id = smithay::backend::renderer::element::Id::from_wayland_resource(&*wl_surface);
                     for elem in elems {
