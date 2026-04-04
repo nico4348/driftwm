@@ -316,9 +316,18 @@ impl DriftWm {
                     self.set_overview_return(None);
                     let vc = self.usable_center_screen();
                     let home = Point::from((-vc.x, -vc.y));
-                    self.set_zoom_animation_center(Some(Point::from((0.0, 0.0))));
-                    self.set_camera_target(Some(home));
-                    self.set_zoom_target(Some(1.0));
+                    if was_fullscreen.is_some() {
+                        // Snap instantly — matches the instant return path and
+                        // avoids animation warps that misplace the cursor.
+                        self.set_camera(home);
+                        self.set_zoom(1.0);
+                        self.update_output_from_camera();
+                        self.warp_pointer(Point::from((0.0, 0.0)));
+                    } else {
+                        self.set_zoom_animation_center(Some(Point::from((0.0, 0.0))));
+                        self.set_camera_target(Some(home));
+                        self.set_zoom_target(Some(1.0));
+                    }
                 }
             }
             Action::GoToPosition(x, y) => {
