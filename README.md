@@ -158,8 +158,7 @@ double-tap to maximize.
   4. Mod+Alt+Arrow to send a window to the other output
 -->
 
-Multiple monitors are independent viewports on the same canvas — different
-zoom levels, overlapping views. An outline on each monitor shows where the
+Multiple monitors are independent viewports on the same canvas. An outline on each monitor shows where the
 other monitors' viewports are. Cursor crosses between monitors freely; dragged
 windows teleport to the target viewport's canvas position.
 
