@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::time::Duration;
 
 use smithay::{
@@ -172,7 +173,10 @@ impl DriftWm {
                             }
                             self.last_titlebar_click = Some((now, surface_id));
 
-                            // Focus + raise (with modal redirect) + start move grab
+                            // Focus + raise (with modal redirect) + start move grab.
+                            // Alt+drag on the titlebar moves a single window;
+                            // cluster drag is a separate explicit action
+                            // (`MoveSnappedWindows`, default Alt+Shift+Left).
                             self.raise_and_focus(&window, serial);
                             let initial_window_location =
                                 self.space.element_location(&window).unwrap();
@@ -186,6 +190,8 @@ impl DriftWm {
                                 window,
                                 initial_window_location,
                                 self.active_output().unwrap(),
+                                Vec::new(),
+                                HashSet::new(),
                             );
                             pointer.set_grab(self, grab, serial, Focus::Clear);
                             return;
@@ -214,7 +220,9 @@ impl DriftWm {
             let context = self.pointer_context(pos);
             if let Some(action) = self.config.mouse_button_lookup_ctx(&mods, button, context).cloned() {
                 match action {
-                    MouseAction::MoveWindow => {
+                    MouseAction::MoveWindow | MouseAction::MoveSnappedWindows => {
+                        let want_cluster =
+                            matches!(action, MouseAction::MoveSnappedWindows);
                         if let Some((window, _)) =
                             self.space.element_under(pos).map(|(w, l)| (w.clone(), l))
                             && let Some(surface) = window.wl_surface()
@@ -229,11 +237,20 @@ impl DriftWm {
                                 button,
                                 location: pos,
                             };
+                            // Only MoveSnappedWindows captures the cluster;
+                            // plain MoveWindow stays strictly single-window.
+                            let (cluster_members, cluster_member_surfaces) = if want_cluster {
+                                self.cluster_snapshot_for_drag(&window, initial_window_location)
+                            } else {
+                                (Vec::new(), HashSet::new())
+                            };
                             let grab = MoveSurfaceGrab::new(
                                 start_data,
                                 window,
                                 initial_window_location,
                                 self.active_output().unwrap(),
+                                cluster_members,
+                                cluster_member_surfaces,
                             );
                             pointer.set_grab(self, grab, serial, Focus::Clear);
                             return;
