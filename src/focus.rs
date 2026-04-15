@@ -11,7 +11,8 @@ use smithay::{
     backend::input::KeyState,
     desktop::PopupKind,
     input::{
-        Seat,
+        Seat, SeatHandler,
+        dnd::{DndFocus, Source},
         keyboard::{KeyboardTarget, KeysymHandle, ModifiersState},
         pointer::{
             AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent,
@@ -24,8 +25,8 @@ use smithay::{
             UpEvent as TouchUpEvent,
         },
     },
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{IsAlive, Serial},
+    reexports::wayland_server::{DisplayHandle, protocol::wl_surface::WlSurface},
+    utils::{IsAlive, Logical, Point, Serial},
     wayland::seat::WaylandFocus,
     xwayland::X11Surface,
 };
@@ -280,11 +281,6 @@ impl TouchTarget<DriftWm> for FocusTarget {
         <WlSurface as TouchTarget<DriftWm>>::orientation(&self.0, seat, data, event, seq);
     }
 }
-
-use smithay::input::dnd::{DndFocus, Source};
-use smithay::utils::{Logical, Point};
-use smithay::reexports::wayland_server::DisplayHandle;
-use smithay::input::SeatHandler;
 
 impl<D> DndFocus<D> for FocusTarget
 where

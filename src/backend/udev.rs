@@ -2,7 +2,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-use tracing::trace;
 
 use smithay::{
     backend::{
@@ -220,7 +219,7 @@ pub fn init_udev(
                     continue;
                 }
             };
-            
+
             let egl_display = match unsafe { EGLDisplay::new(gbm.clone()) } {
                 Ok(d) => d,
                 Err(e) => {
@@ -981,34 +980,34 @@ fn render_frame(
     let renderer = backend.renderer();
     let elements = crate::render::compose_frame(data, renderer, output, cursor_elements);
 
-    // Task 3: Global Scanout Lockdown (Quirk).
-    // If enabled, completely strip FrameFlags::ALLOW_SCANOUT to ensure EGL composition.
+    // Primary plane scanout (any format) + cursor plane. Overlay planes left off —
+    // they cause hard-to-diagnose flicker on some hardware (niri does the same).
     let frame_flags = if data.config.backend.disable_direct_scanout {
         FrameFlags::empty()
     } else {
-        FrameFlags::ALLOW_SCANOUT
+        FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT
     };
 
     // Render via DRM compositor (latency-sensitive — do first)
     let renderer = backend.renderer();
-    let match_result = compositor.render_frame::<_, OutputRenderElements>(
+    let render_result = compositor.render_frame::<_, OutputRenderElements>(
         renderer,
         &elements,
         [0.0f32, 0.0, 0.0, 1.0],
         frame_flags,
     );
 
-    // Task 5: Wait for Buffer Ready (Explicit Sync Ready signal)
-    // If enabled, we manually wait for the GPU fence before flipping.
+    // Opt-in fence wait for NVIDIA/explicit-sync hardware that page-flips
+    // before the GPU has actually finished rendering.
     if data.config.backend.wait_for_frame_completion
-        && let Ok(ref render_result) = match_result
-            && render_result.needs_sync()
-                && let PrimaryPlaneElement::Swapchain(ref element) = render_result.primary_element {
-                    trace!("wait_for_frame_completion is enabled, waiting for GPU fence");
-                    let _ = element.sync.wait();
-                }
+        && let Ok(ref rr) = render_result
+        && rr.needs_sync()
+        && let PrimaryPlaneElement::Swapchain(ref element) = rr.primary_element
+    {
+        let _ = element.sync.wait();
+    }
 
-    match match_result {
+    match render_result {
         Ok(_render_result) => {
             if let Err(e) = compositor.queue_frame(()) {
                 tracing::warn!("Failed to queue frame: {e:?}");
