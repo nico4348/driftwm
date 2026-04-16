@@ -21,9 +21,10 @@ The result covers the entire output behind all windows.
 
 ### Custom (provided by driftwm)
 
-| Name       | Type   | Description                               |
-| ---------- | ------ | ----------------------------------------- |
-| `u_camera` | `vec2` | Viewport position on the canvas in pixels |
+| Name       | Type    | Description                               |
+| ---------- | ------- | ----------------------------------------- |
+| `u_camera` | `vec2`  | Viewport position on the canvas in pixels |
+| `u_time`   | `float` | Seconds since compositor start            |
 
 `v_coords * size` gives screen-local pixel coordinates (top-left = 0,0).
 Adding `u_camera` converts to canvas coordinates — this is how the background
@@ -74,13 +75,14 @@ void main() {
   See `dot_grid.glsl` for an example. Noise-based shaders using
   `floor()`/`fract()` internally are naturally resilient since the hash
   functions wrap.
-- **No time uniform**: driftwm only re-renders when the viewport moves.
-  Animated shaders are not currently supported.
+- **Animated shaders**: `u_time` gives seconds since compositor start, enabling
+  time-driven animations. driftwm re-renders every frame when a shader uses
+  `u_time` — declare it in your shader and it will animate continuously.
 - **Colors as constants**: Define colors, spacing, and other tunables as
   GLSL `const` values at the top of your shader. This keeps everything in
   one file — no config round-trip needed.
-- **Shipped examples**: See `assets/shaders/` for dot grid, compass grid,
-  noise clouds, and dark sea patterns.
+- **Shipped examples**: See `extras/wallpapers/` for dot grid, compass grid,
+  noise clouds, dark sea, blue drift, and animated squares.
 
 ## Using a custom shader
 

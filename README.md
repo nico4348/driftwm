@@ -103,8 +103,8 @@ https://github.com/user-attachments/assets/9064883c-86ea-4db6-a40a-0418d2ee2f5e
 The background is part of the canvas — it scrolls and zooms with the viewport,
 not stuck to the screen. This gives spatial awareness when panning.
 
-Two modes: **GLSL shaders** (default: dot grid, or write your own — see
-[docs/shaders.md](docs/shaders.md)) and **tiled images** (any PNG/JPG, tiled
+Two modes: **GLSL shaders** (default: dot grid, or write your own (supports animated)
+— see [docs/shaders.md](docs/shaders.md)) and **tiled images** (any PNG/JPG, tiled
 infinitely across the canvas). Both are infinite by nature.
 
 ```toml
@@ -237,16 +237,19 @@ in
 Requires Rust 1.85+ (edition 2024).
 
 **Fedora:**
+
 ```bash
 sudo dnf install libseat-devel libdisplay-info-devel libinput-devel mesa-libgbm-devel libxkbcommon-devel
 ```
 
 **Ubuntu/Debian:**
+
 ```bash
 sudo apt install libseat-dev libdisplay-info-dev libinput-dev libudev-dev libgbm-dev libxkbcommon-dev libwayland-dev
 ```
 
 **Arch Linux:**
+
 ```bash
 sudo pacman -S libdisplay-info libinput seatd mesa libxkbcommon
 ```
@@ -280,7 +283,7 @@ manager integration, select "driftwm" from the session menu.
 | `mod+m`            | Fit window (maximize/restore) |
 | `mod+f`            | Toggle fullscreen             |
 | `mod+c`            | Center focused window         |
-| `mod+x`            | Center window under cursor |
+| `mod+x`            | Center window under cursor    |
 | `mod+arrow`        | Jump to nearest window        |
 | `mod+a`            | Home toggle                   |
 | `mod+w`            | Zoom-to-fit (overview)        |
