@@ -1599,12 +1599,7 @@ impl DriftWm {
             .find(|(w, _)| w == window)
             .map(|(_, r)| *r)
         else {
-            return ClusterResizeSnapshot {
-                members: Vec::new(),
-                exclude: HashSet::new(),
-                bonds: Vec::new(),
-                bonds_set: HashSet::new(),
-            };
+            return ClusterResizeSnapshot::empty();
         };
 
         // Rect lookup for BFS inner loop. Keys are cloned Arcs — cheap.
@@ -1735,6 +1730,8 @@ impl DriftWm {
             exclude,
             bonds: Vec::new(),
             bonds_set: HashSet::new(),
+            primary_rect,
+            resize_edges: edges as u32,
         }
     }
 }
@@ -1777,6 +1774,14 @@ pub struct ClusterResizeSnapshot {
     pub bonds: Vec<(usize, usize)>,
     /// Parallel set for O(1) bond dedup. Mirrors `bonds` contents.
     bonds_set: HashSet<(usize, usize)>,
+    /// Primary window's rect frozen at grab start, used to compute
+    /// primary-push encroachment in `resolve_cluster_shifts` phase 2.5.
+    pub primary_rect: driftwm::snap::SnapRect,
+    /// Which edges are active for this resize (raw u32 bitmask: top=1,
+    /// bottom=2, left=4, right=8). Combined with `primary_rect` and the
+    /// current deltas, this lets `compute_shifts` reconstruct the primary's
+    /// current rect each frame without storing extra state.
+    pub resize_edges: u32,
 }
 
 impl ClusterResizeSnapshot {
@@ -1787,6 +1792,13 @@ impl ClusterResizeSnapshot {
             exclude: HashSet::new(),
             bonds: Vec::new(),
             bonds_set: HashSet::new(),
+            primary_rect: driftwm::snap::SnapRect {
+                x_low: 0.0,
+                x_high: 0.0,
+                y_low: 0.0,
+                y_high: 0.0,
+            },
+            resize_edges: 0,
         }
     }
 
@@ -1866,8 +1878,17 @@ impl ClusterResizeSnapshot {
             })
             .collect();
 
+        // Reconstruct primary's current rect from the frozen initial rect and
+        // the active edges + current deltas, so phase 2.5 can push members.
+        let mut p_cur = self.primary_rect;
+        if self.resize_edges & 8 != 0 { p_cur.x_high += width_delta as f64; }
+        if self.resize_edges & 4 != 0 { p_cur.x_low -= width_delta as f64; }
+        if self.resize_edges & 2 != 0 { p_cur.y_high += height_delta as f64; }
+        if self.resize_edges & 1 != 0 { p_cur.y_low -= height_delta as f64; }
+        let primary = Some((self.primary_rect, p_cur));
+
         let (shifts, new_bonds) =
-            resolve_cluster_shifts(&classifications, width_delta, height_delta, gap, &self.bonds);
+            resolve_cluster_shifts(&classifications, width_delta, height_delta, gap, &self.bonds, primary);
         for bond in new_bonds {
             if self.bonds_set.insert(bond) {
                 self.bonds.push(bond);
