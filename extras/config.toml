@@ -35,6 +35,9 @@ shader_path = "/usr/local/share/driftwm/wallpapers/pink_cloud.glsl"
 [output.outline]
 color="#FDF6E3"
 
+[mouse]
+resize_snapped_default = true
+
 [keybindings]
 "mod+return" = "exec ptyxis -s"
 "mod+d" = "exec fuzzel"
