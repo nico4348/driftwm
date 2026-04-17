@@ -321,23 +321,25 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the full compositor design specificatio
 driftwm is just a compositor — everything else is standard Wayland tooling.
 Here are some tools that work well with it:
 
-| Tool                  | Purpose                                                        |
-| --------------------- | -------------------------------------------------------------- |
-| waybar                | Status bar / taskbar                                           |
-| crystal-dock          | macOS-style dock                                               |
-| fuzzel / wofi         | App launcher                                                   |
-| mako / swaync         | Notifications                                                  |
-| swaylock              | Lock screen                                                    |
-| swayidle / hypridle   | Idle timeout (lock, suspend)                                   |
-| swayosd               | Volume/brightness OSD                                          |
-| grim + slurp          | Screenshots                                                    |
-| wlr-randr / wdisplays | Output configuration                                           |
-| COSMIC Settings       | Wi-Fi, Bluetooth, sound (or nm-applet + blueman + pavucontrol) |
+- **waybar** — Status bar / taskbar
+- **crystal-dock** — macOS-style dock
+- **fuzzel / wofi** — App launcher
+- **mako / swaync** — Notifications
+- **swaylock** — Lock screen
+- **swayidle / hypridle** — Idle timeout (lock, suspend)
+- **swayosd** — Volume/brightness OSD
+- **grim + slurp** — Screenshots
+- **wlr-randr / wdisplays** — Output configuration
+- **COSMIC Settings** — Wi-Fi, Bluetooth, sound (or nm-applet + blueman + pavucontrol)
 
 The [`extras/`](extras/) directory contains a complete setup — driftwm config,
 GLSL shader wallpapers, Python widgets (clock, calendar, system stats, power
 menu), waybar with taskbar/tray, fuzzel window-search script, and window rules
 tying it all together. Use it as a starting point or steal pieces.
+
+## Community tools
+
+- [driftwm-settings](https://github.com/wwmaxik/driftwm-settings) — GTK4 GUI config editor
 
 ## Contributing
 
